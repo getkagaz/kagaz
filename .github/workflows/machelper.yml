@@ -1,0 +1,78 @@
+name: machelper
+
+# Compile-only checks for the two Swift packages. These jobs must NEVER
+# download model weights: nothing in a `swift build` does, and no step here
+# runs `kagaz model pull` or any helper subcommand that would load a model.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "machelper/**"
+      - "machelper-mlx/**"
+      - ".github/workflows/machelper.yml"
+  pull_request:
+    paths:
+      - "machelper/**"
+      - "machelper-mlx/**"
+      - ".github/workflows/machelper.yml"
+  workflow_dispatch:
+
+# Read-only; runs on fork PRs and must never see a secret.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  machelper:
+    name: kagaz-machelper
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          swift --version
+          xcode-select -p
+
+      # No external SwiftPM packages, so this build needs no network at all.
+      - name: swift build (release)
+        working-directory: machelper
+        run: swift build -c release
+
+      # No `swift test` step: machelper/ has no Tests/ target today. Add one
+      # here when it gains one.
+
+  machelper-mlx:
+    name: kagaz-machelper-mlx
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # MLX ships C++ sources, so this needs a complete C++ toolchain. Fail
+      # early and legibly if the runner image ever regresses, rather than
+      # after several hundred compile steps.
+      - name: Check C++ toolchain
+        run: printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: machelper-mlx/.build
+          key: ${{ runner.os }}-spm-mlx-${{ hashFiles('machelper-mlx/Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-mlx-
+
+      # `swift build` resolves MLX and swift-transformers from GitHub. That is
+      # source code, not model weights; the binary itself never downloads.
+      - name: swift build (release)
+        working-directory: machelper-mlx
+        run: swift build -c release
+
+      - name: swift test
+        working-directory: machelper-mlx
+        run: swift test

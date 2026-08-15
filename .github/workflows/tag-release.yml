@@ -1,0 +1,62 @@
+name: tag-release
+
+# Creates the GitHub Release for a pushed v* tag. Kept separate from
+# release.yml so that "a release object exists" and "bottles were built" are
+# distinct, independently visible steps.
+#
+# Note: a release created with GITHUB_TOKEN does not itself trigger other
+# workflows. release.yml therefore fires from the tag push, not from the
+# `release: published` event this job emits — its `release: published` trigger
+# is for releases a human publishes by hand.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Never run in a fork: a fork tag push must not attempt a release.
+    if: github.repository == 'getkagaz/kagaz'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it alone."
+            exit 0
+          fi
+
+          # A tag with a hyphen (v0.1.0-rc.1) is a prerelease.
+          prerelease=""
+          case "$TAG" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            $prerelease
+
+      - name: Note what is not yet attached
+        run: |
+          echo "Release object created. Bottles are built and uploaded by"
+          echo "release.yml, which needs the KAGAZ_TAP_TOKEN secret to also"
+          echo "sync the formula to getkagaz/homebrew-kagaz."

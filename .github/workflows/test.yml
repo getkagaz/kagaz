@@ -1,0 +1,59 @@
+name: test
+
+# The Go core must build and pass on Linux, where none of the macOS tools
+# (pdftotext, kagaz-machelper, mdfind, brctl) exist. That is the honest test of
+# graceful degradation (project constraint 9), so Linux is not optional here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only. This workflow runs on pull_request (fork PRs included) and must
+# never be able to reach a secret.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go:
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 is the Apple silicon (arm64) runner image and matches the
+        # project's macOS floor. Apple silicon only: there is deliberately no
+        # x86_64 job.
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race ./...

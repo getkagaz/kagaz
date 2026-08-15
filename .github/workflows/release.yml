@@ -1,0 +1,230 @@
+name: release
+
+# Builds arm64 bottles for `kagaz` and syncs both formulae to the tap repo
+# (getkagaz/homebrew-kagaz).
+#
+# NOTHING HERE HAS EVER RUN: no release has been tagged and no bottle has ever
+# been published. This workflow is unexercised until a `v*` tag is pushed with
+# the KAGAZ_TAP_TOKEN secret configured.
+#
+# Two triggers, one tag. `github.ref_name` is the tag on a tag push but the
+# *default branch* on `release: published`, so the tag is resolved explicitly
+# in the `meta` job and every later job reads that output instead.
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* tag to build bottles for"
+        required: true
+        type: string
+
+# No `pull_request` trigger anywhere in this file: a fork PR can never reach
+# these secrets. Default token is read-only; the one job that needs to write
+# release assets asks for `contents: write` itself.
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed on the resolved ref so a tag push and a hand-published release for
+  # the same version queue instead of racing. Never cancel: a half-finished
+  # bottle upload is worse than a duplicate run.
+  group: release-${{ github.event.release.tag_name || github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    name: resolve tag
+    if: github.repository == 'getkagaz/kagaz'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve the tag for this trigger
+        id: resolve
+        env:
+          # Passed through the environment, never interpolated into the shell:
+          # a tag name is attacker-influenced text on a public repo.
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            release)           tag="$RELEASE_TAG" ;;
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            push)              tag="${REF#refs/tags/}" ;;
+            *) echo "::error::unexpected event $EVENT_NAME"; exit 1 ;;
+          esac
+
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "::error::resolved tag '$tag' is not a v* release tag"; exit 1 ;;
+          esac
+
+          printf 'tag=%s\n' "$tag" >>"$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${tag#v}" >>"$GITHUB_OUTPUT"
+          printf 'Resolved tag: %s\n' "$tag"
+
+  bottle:
+    name: arm64 bottle
+    needs: meta
+    # Apple silicon only (project constraint 10). There is deliberately no
+    # x86_64 job; Intel Macs are permanently out of scope.
+    runs-on: macos-15
+    permissions:
+      contents: write # uploads bottle assets to the release
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      HOMEBREW_NO_ANALYTICS: 1
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_FROM_API: 1
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+          persist-credentials: false
+
+      - name: Point the formulae at this release's tarball
+        run: |
+          set -euo pipefail
+          url="https://github.com/getkagaz/kagaz/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL -o source.tar.gz "$url"
+          sha="$(shasum -a 256 source.tar.gz | cut -d' ' -f1)"
+          echo "source tarball sha256: $sha"
+
+          for f in Formula/kagaz.rb Formula/kagaz-mlx.rb; do
+            /usr/bin/sed -i '' \
+              -e "s|^  url \".*\"$|  url \"${url}\"|" \
+              -e "s|^  version \".*\"$|  version \"${VERSION}\"|" \
+              -e "s|^  sha256 \"[0-9a-f]\{64\}\"$|  sha256 \"${sha}\"|" \
+              "$f"
+            grep -E '^  (url|version|sha256) ' "$f"
+          done
+
+      - name: Stage a local tap
+        run: |
+          set -euo pipefail
+          tap="$(brew --repository)/Library/Taps/getkagaz/homebrew-kagaz"
+          mkdir -p "$tap/Formula"
+          cp Formula/kagaz.rb Formula/kagaz-mlx.rb "$tap/Formula/"
+          git -C "$tap" init -q
+          git -C "$tap" add -A
+          git -C "$tap" -c user.name=ci -c user.email=ci@local commit -qm "$TAG"
+          # Recent Homebrew refuses to load formulae from an untrusted tap.
+          # Older versions have no `brew trust`, hence the tolerant `|| true`.
+          brew trust getkagaz/kagaz || true
+          echo "TAP=$tap" >>"$GITHUB_ENV"
+
+      - name: Build the bottle
+        id: bottle
+        run: |
+          set -euo pipefail
+          brew install --build-bottle --verbose getkagaz/kagaz/kagaz
+          brew test getkagaz/kagaz/kagaz
+          brew bottle \
+            --json \
+            --no-rebuild \
+            --root-url="https://github.com/getkagaz/kagaz/releases/download/${TAG}" \
+            getkagaz/kagaz/kagaz
+          ls -l ./*.bottle.tar.gz ./*.bottle.json
+          # Write the bottle block (with its sha256) into the staged formula.
+          brew bottle --merge --write --no-commit ./*.bottle.json
+          cp "$TAP/Formula/kagaz.rb" ./kagaz.rb
+          printf 'bottled=true\n' >>"$GITHUB_OUTPUT"
+
+      - name: Upload the bottle to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Homebrew names the local file with `--` and the download with `-`.
+          for f in ./*.bottle.tar.gz; do
+            dest="$(basename "$f" | sed 's|--|-|')"
+            [ "$f" = "./$dest" ] || cp "$f" "$dest"
+            gh release upload "$TAG" "$dest" --clobber
+          done
+          gh release upload "$TAG" ./*.bottle.json --clobber
+
+      - name: Keep the bottled formulae for the tap job
+        uses: actions/upload-artifact@v4
+        with:
+          name: formulae
+          path: |
+            kagaz.rb
+            Formula/kagaz-mlx.rb
+          if-no-files-found: error
+
+  tap:
+    name: sync tap
+    needs: [meta, bottle]
+    runs-on: ubuntu-latest
+    # KAGAZ_TAP_TOKEN is a PAT with write access to getkagaz/homebrew-kagaz.
+    # Without it this job is skipped and the release simply has no tap update
+    # — the bottles are still attached to the GitHub Release.
+    steps:
+      - name: Download the bottled formulae
+        uses: actions/download-artifact@v4
+        with:
+          name: formulae
+          path: staged
+
+      - name: Check for the tap token
+        id: token
+        env:
+          TAP_TOKEN: ${{ secrets.KAGAZ_TAP_TOKEN }}
+        run: |
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "::warning::KAGAZ_TAP_TOKEN is not configured; skipping tap sync."
+            printf 'present=false\n' >>"$GITHUB_OUTPUT"
+          else
+            printf 'present=true\n' >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Push the formulae to getkagaz/homebrew-kagaz
+        if: steps.token.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.KAGAZ_TAP_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/getkagaz/homebrew-kagaz.git" tap
+          mkdir -p tap/Formula
+          cp staged/kagaz.rb tap/Formula/kagaz.rb
+          cp staged/Formula/kagaz-mlx.rb tap/Formula/kagaz-mlx.rb
+
+          cd tap
+          git config user.name "kagaz-release[bot]"
+          git config user.email "kagaz-release@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Tap already up to date for $TAG."
+            exit 0
+          fi
+          git add Formula/kagaz.rb Formula/kagaz-mlx.rb
+          git commit -m "kagaz ${TAG}"
+          git push
+
+      - name: Summary
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+          SYNCED: ${{ steps.token.outputs.present }}
+        run: |
+          {
+            echo "### Release ${TAG}"
+            echo ""
+            echo "- arm64 bottle for \`kagaz\`: built and uploaded to the release."
+            echo "- \`kagaz-mlx\`: formula synced without a bottle. It is opt-in and"
+            echo "  builds from source; bottling the whole MLX-Swift graph is not"
+            echo "  attempted here."
+            echo "- Tap sync: ${SYNCED}"
+          } >>"$GITHUB_STEP_SUMMARY"
