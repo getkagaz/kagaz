@@ -1,0 +1,2 @@
+{ "contract": 1, "engine": "mlx", "doctype": "payslip", "category": "financial",
+  "confidence": 0.88, "fields": { "employer": "Acme Corporation" } }

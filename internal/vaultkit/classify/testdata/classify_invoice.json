@@ -1,0 +1,2 @@
+{ "contract": 1, "engine": "apple", "doctype": "invoice", "category": "financial",
+  "confidence": 0.92, "fields": { "amount": "4800", "vendor": "Acme Corporation" } }
