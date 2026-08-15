@@ -317,6 +317,119 @@ func TestInferIdentifier(t *testing.T) {
 	}
 }
 
+// TestInferOwnersHandlesNonASCIINames is the fix for a normalisation that
+// dropped every non-ASCII letter. "Anaïs Dupont" collapsed to "ana s dupont",
+// which word-matched a configured "Ana Dupont" and filed the document into the
+// wrong person's folder with a confident explanation; and a wholly non-Latin
+// name collapsed to the empty string, which could never match anything.
+func TestInferOwnersHandlesNonASCIINames(t *testing.T) {
+	anais := config.Person{Name: "Anaïs Dupont", Tag: "anais-dupont"}
+	ana := config.Person{Name: "Ana Dupont", Tag: "ana-dupont"}
+	olga := config.Person{Name: "Ольга Иванова", Tag: "olga-ivanova"}
+	yuki := config.Person{Name: "田中 由紀", Tag: "yuki-tanaka"}
+
+	tests := []struct {
+		name       string
+		people     []config.Person
+		path       string
+		text       string
+		wantOwners []string
+	}{
+		{
+			name:       "an accented name does not match a different unaccented person",
+			people:     []config.Person{anais, ana},
+			path:       "/in/scan.pdf",
+			text:       "Bill To: Anaïs Dupont",
+			wantOwners: []string{"Anaïs Dupont"},
+		},
+		{
+			name:       "the unaccented person still matches their own name",
+			people:     []config.Person{anais, ana},
+			path:       "/in/scan.pdf",
+			text:       "Bill To: Ana Dupont",
+			wantOwners: []string{"Ana Dupont"},
+		},
+		{
+			name:       "diacritics are folded, so OCR that dropped them still matches",
+			people:     []config.Person{anais},
+			path:       "/in/scan.pdf",
+			text:       "Bill To: Anais Dupont",
+			wantOwners: []string{"Anaïs Dupont"},
+		},
+		{
+			name:       "a Cyrillic name matches itself rather than normalising to nothing",
+			people:     []config.Person{olga},
+			path:       "/in/scan.pdf",
+			text:       "Получатель: Ольга Иванова",
+			wantOwners: []string{"Ольга Иванова"},
+		},
+		{
+			name:       "a Japanese name matches from the file name",
+			people:     []config.Person{yuki},
+			path:       "/in/田中 由紀 passport.pdf",
+			text:       "",
+			wantOwners: []string{"田中 由紀"},
+		},
+		{
+			name:       "a non-Latin name does not match an unrelated document",
+			people:     []config.Person{olga},
+			path:       "/in/scan.pdf",
+			text:       "An entirely unrelated English invoice",
+			wantOwners: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := peopleConfig(t, tt.people...)
+			owners, why := inferOwners(cfg, tt.path, tt.text)
+			if strings.Join(owners, ",") != strings.Join(tt.wantOwners, ",") {
+				t.Fatalf("owners = %v, want %v (%q)", owners, tt.wantOwners, why[0].Detail)
+			}
+		})
+	}
+}
+
+func TestNormalizeForMatchKeepsEveryScript(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"ALEX_Rao-2024!!", "alex rao 2024"},
+		{"Anaïs Dupont", "anais dupont"},
+		{"Jörg Müller", "jorg muller"},
+		{"Łukasz Nowak", "lukasz nowak"},
+		{"Straße 5", "strasse 5"},
+		{"Ольга Иванова", "ольга иванова"},
+		{"田中 由紀", "田中 由紀"},
+		{"Ελένη", "ελένη"},
+		{"!!!", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := normalizeForMatch(tt.in); got != tt.want {
+				t.Fatalf("normalizeForMatch(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpperFirstIsRuneSafe: a stem token can start with a multi-byte rune, and
+// slicing its first byte would put invalid UTF-8 into a filename.
+func TestUpperFirstIsRuneSafe(t *testing.T) {
+	for in, want := range map[string]string{
+		"acme":   "Acme",
+		"éclair": "Éclair",
+		"ольга":  "Ольга",
+		"田中":     "田中",
+		"":       "",
+	} {
+		if got := upperFirst(in); got != want {
+			t.Errorf("upperFirst(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNormalizeAndWordMatch(t *testing.T) {
 	if got := normalizeForMatch("ALEX_Rao-2024!!"); got != "alex rao 2024" {
 		t.Fatalf("normalizeForMatch = %q", got)

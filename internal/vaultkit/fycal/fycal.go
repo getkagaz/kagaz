@@ -60,8 +60,17 @@ func (y Year) Label() string {
 	return r.Replace(y.cal.LabelFormat)
 }
 
-// Tag renders the fiscal year as a Finder-tag slug, e.g. "fy2026" or
-// "fy2026-27". Tags are lowercase and separator-free by convention.
+// Tag renders the fiscal year as a Finder-tag slug: "FY 2026" becomes
+// "fy2026", the split default "FY 25-26" becomes "fy25-26", and "FY 2026-27"
+// becomes "fy2026-27".
+//
+// Whitespace in the label is *deleted* rather than turned into a separator.
+// The space in "FY 2026" is typographic, not structural -- it joins the "FY"
+// prefix to its year -- whereas a dash a user wrote in their label_format is a
+// deliberate separator between two years and survives. Collapsing whitespace to
+// a dash instead produced "fy-2024", which no vault's tag vocabulary lists and
+// which this function's own doc comment has always contradicted; ingest
+// silently dropped every fiscal-year tag as a result.
 func (y Year) Tag() string {
 	var b strings.Builder
 	lastDash := true
@@ -70,6 +79,8 @@ func (y Year) Tag() string {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
 			lastDash = false
+		case r == ' ', r == '\t', r == '\n', r == '\r':
+			// Deliberately emits nothing, not even a separator.
 		default:
 			if !lastDash {
 				b.WriteByte('-')

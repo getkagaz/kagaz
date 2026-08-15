@@ -3,8 +3,10 @@ package ingest
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/audit"
 	"github.com/getkagaz/kagaz/internal/vaultkit/move"
@@ -70,6 +72,14 @@ func (p *Pipeline) Execute(proposals []Proposal) (*Result, error) {
 			res.Skipped = append(res.Skipped, prop)
 			continue
 		}
+		// Proposals arrive from a CLI that lets a user edit them, so the
+		// destination is re-checked here rather than trusted from Analyze. This
+		// runs before the manifest is written, so a rejected batch has done
+		// nothing at all.
+		if err := p.checkDest(prop.Dest); err != nil {
+			return res, fmt.Errorf("ingest: %s: %w", filepath.Base(prop.Source), err)
+		}
+		prop.Tags = p.recheckTags(&prop)
 		ops = append(ops, move.Op{Src: prop.Source, Dst: prop.Dest})
 		acting = append(acting, prop)
 	}
@@ -119,6 +129,70 @@ func (p *Pipeline) Execute(proposals []Proposal) (*Result, error) {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("audit line not written: %v", err))
 	}
 	return res, moveErr
+}
+
+// checkDest refuses a destination that is not a plain file inside the vault.
+//
+// Analyze builds destinations from the vault's own conventions and could never
+// produce one of these. Execute is the mutating half of a public API that the
+// CLI feeds user-edited proposals into, so it verifies rather than assumes: an
+// unchecked Dest is an arbitrary-file-write through a tool whose entire promise
+// is that it only ever moves documents inside your vault.
+func (p *Pipeline) checkDest(dest string) error {
+	if p.Cfg == nil || p.Cfg.VaultRoot == "" {
+		return errors.New("no vault root configured")
+	}
+	if !filepath.IsAbs(dest) {
+		return fmt.Errorf("destination %q is not an absolute path", dest)
+	}
+	clean := filepath.Clean(dest)
+
+	root := filepath.Clean(p.Cfg.VaultRoot)
+	rel, err := filepath.Rel(root, clean)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("destination %q is outside the vault root %q", dest, root)
+	}
+	// Kagaz's own bookkeeping areas are not filing destinations. Writing a
+	// document into staging would queue it for the user to delete; writing one
+	// into manifests would corrupt the rollback record.
+	for _, reserved := range []string{p.Cfg.StagingDir(), p.Cfg.ManifestDir()} {
+		if r, err := filepath.Rel(filepath.Clean(reserved), clean); err == nil &&
+			r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("destination %q is inside %q, which Kagaz reserves for its own bookkeeping", dest, reserved)
+		}
+	}
+	if sidecar.IsSidecar(clean) {
+		return fmt.Errorf("destination %q is a sidecar path; sidecars travel with their document", dest)
+	}
+	if st, err := os.Stat(clean); err == nil && st.IsDir() {
+		return fmt.Errorf("destination %q is an existing directory", dest)
+	}
+	return nil
+}
+
+// recheckTags re-runs the controlled-vocabulary check on a proposal's tags at
+// execution time.
+//
+// Analyze already filtered them, but a caller may have edited the proposal in
+// between -- the CLI is about to let a user do exactly that -- and the
+// vocabulary check is the whole reason Finder tags stay searchable. Rejected
+// tags are moved to DroppedTags rather than silently discarded.
+func (p *Pipeline) recheckTags(prop *Proposal) []string {
+	if p.Vocab == nil || len(prop.Tags) == 0 {
+		return prop.Tags
+	}
+	kept := make([]string, 0, len(prop.Tags))
+	for _, tag := range tags.Normalize(prop.Tags) {
+		if p.Vocab.Known(tag) {
+			kept = append(kept, tag)
+			continue
+		}
+		prop.DroppedTags = append(prop.DroppedTags, DroppedTag{
+			Tag:    tag,
+			Reason: "not in the vault's tag vocabulary at execution time; add it to vault.yaml to use it",
+		})
+	}
+	return kept
 }
 
 // actualDest resolves the destination the engine really used, which differs

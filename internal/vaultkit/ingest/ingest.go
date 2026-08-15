@@ -241,6 +241,13 @@ func (p *Pipeline) Analyze(ctx context.Context, paths []string) ([]Proposal, err
 
 	out := make([]Proposal, 0, len(files))
 	for _, path := range files {
+		// A cancelled batch must say it was cancelled. Without this check the
+		// remaining files each fail extraction with a wrapped context error and
+		// come back as N skipped proposals reading "no text extracted: context
+		// canceled", which looks like N unreadable documents.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("ingest: %w", err)
+		}
 		prop, err := p.analyzeOne(ctx, path)
 		if err != nil {
 			// Only a whole-vault problem reaches here.

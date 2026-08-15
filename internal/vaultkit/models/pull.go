@@ -210,6 +210,15 @@ func (c *Client) Pull(ctx context.Context, opts Options) (*Result, error) {
 				verified[f.Name] = f
 			}
 		}
+	} else if prev != nil && prev.Revision != "" {
+		// The user is pulling a different commit than the interrupted run was.
+		// Any leftover `.part` holds revision A's bytes, and resuming it would
+		// splice revision B onto that prefix -- a file that is the right length
+		// and wrong content. Discard them before starting.
+		if err := discardPartials(dir); err != nil {
+			return nil, err
+		}
+		logf(fmt.Sprintf("previous pull was of revision %s; discarding its partial downloads", prev.Revision))
 	}
 
 	man := &Manifest{
@@ -269,6 +278,43 @@ func (c *Client) Pull(ctx context.Context, opts Options) (*Result, error) {
 	return res, nil
 }
 
+// isTopLevelConfig and isTopLevelWeights are the readiness gate, and both
+// insist the file sits at the top of the model directory.
+//
+// ModelCache.resolve in the Swift MLX helper uses contentsOfDirectory, which
+// does not recurse. A nested onnx/model.safetensors would satisfy a naive
+// suffix test here while the helper still answered model_not_found, so this
+// package's definition of "ready" is deliberately the helper's definition of
+// "present", not a looser one.
+func isTopLevelConfig(name string) bool {
+	return name == "config.json"
+}
+
+func isTopLevelWeights(name string) bool {
+	return !strings.Contains(name, "/") && strings.HasSuffix(name, ".safetensors")
+}
+
+// discardPartials removes every `.part` file in a model directory. These are
+// Kagaz's own incomplete temp files, never user documents.
+func discardPartials(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".part") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // verifyComplete is the last gate before `status: ready`. Every file must
 // carry a verified digest, and the directory must satisfy what the Swift
 // helper checks for, so "ready" and "loadable" never disagree.
@@ -278,15 +324,15 @@ func verifyComplete(man *Manifest) error {
 		if !f.Verified || f.SHA256 == "" {
 			return fmt.Errorf("models: %s: %s was not verified; refusing to mark the download ready", man.Repo, f.Name)
 		}
-		if f.Name == "config.json" {
+		if isTopLevelConfig(f.Name) {
 			hasConfig = true
 		}
-		if strings.HasSuffix(f.Name, ".safetensors") {
+		if isTopLevelWeights(f.Name) {
 			hasWeights = true
 		}
 	}
 	if !hasConfig || !hasWeights {
-		return fmt.Errorf("models: %s: downloaded set has no config.json and/or no .safetensors weights; refusing to mark it ready", man.Repo)
+		return fmt.Errorf("models: %s: downloaded set has no top-level config.json and/or no top-level .safetensors weights; refusing to mark it ready", man.Repo)
 	}
 	return nil
 }
@@ -358,27 +404,47 @@ func selectFiles(repo string, info *repoInfoResponse) ([]remoteFile, error) {
 		if f.Size > maxFileSize {
 			return nil, fmt.Errorf("models: %s: %s is %d bytes, above the %d byte limit", repo, name, f.Size, int64(maxFileSize))
 		}
+		// A file with neither a published digest nor a size cannot be verified
+		// at all, and verifyFile would then mark it Verified having checked
+		// nothing. Refusing here makes the hub contract fail safe: if the
+		// metadata is not good enough to prove a download is correct, the pull
+		// stops rather than writing `status: ready` over unverified bytes.
+		if f.SHA256 == "" && f.Size <= 0 {
+			return nil, fmt.Errorf("models: %s: the hub published neither a size nor a sha256 for %s, "+
+				"so the download could not be verified; refusing the pull", repo, name)
+		}
 		out = append(out, f)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 
 	hasConfig, hasWeights := false, false
 	for _, f := range out {
-		if f.Name == "config.json" {
+		if isTopLevelConfig(f.Name) {
 			hasConfig = true
 		}
-		if strings.HasSuffix(f.Name, ".safetensors") {
+		if isTopLevelWeights(f.Name) {
 			hasWeights = true
 		}
 	}
 	if !hasConfig || !hasWeights {
-		return nil, fmt.Errorf("models: %s does not look like an MLX model: it has no config.json and/or no .safetensors weights", repo)
+		return nil, fmt.Errorf("models: %s does not look like an MLX model: it has no top-level config.json and/or no top-level .safetensors weights", repo)
 	}
 	return out, nil
 }
 
 // wanted reports whether a repo file is part of an MLX model.
+//
+// Nested paths are excluded, and that exclusion is load-bearing rather than
+// tidiness. ModelCache.resolve in the Swift helper checks for config.json and
+// a .safetensors file with contentsOfDirectory, which lists the *top level
+// only*. A repo that also publishes onnx/model.safetensors would otherwise
+// satisfy this package's readiness check while the helper still reported
+// model_not_found -- the precise "the pull succeeded but classification says
+// the model is missing" failure this cache exists to prevent.
 func wanted(name string) bool {
+	if strings.Contains(name, "/") {
+		return false
+	}
 	if wantedFiles[name] {
 		return true
 	}
@@ -429,7 +495,15 @@ func (c *Client) fetch(ctx context.Context, opts Options, revision string, want 
 	offset := int64(0)
 	if st, err := os.Stat(part); err == nil && st.Mode().IsRegular() {
 		offset = st.Size()
-		if want.Size > 0 && offset > want.Size {
+		switch {
+		case want.SHA256 == "":
+			// Without a published digest, a resumed file can only ever be
+			// size-checked, and a `.part` left by a different revision can be
+			// exactly the right size. These files are the small ones
+			// (config.json, tokenizer_config.json, merges.txt), so restarting
+			// costs nothing and removes the splice risk entirely.
+			offset = 0
+		case want.Size > 0 && offset > want.Size:
 			// A partial file longer than the whole file is garbage, not a
 			// resume point.
 			offset = 0
@@ -497,7 +571,16 @@ func (c *Client) fetch(ctx context.Context, opts Options, revision string, want 
 
 	got, err := verifyFile(part, want)
 	if err != nil {
-		return File{}, err
+		// The partial file is now known to be wrong, and leaving it would wedge
+		// every future pull: at offset == want.Size the server answers 416, no
+		// bytes are written, verification fails again, and the user has to find
+		// and delete a dotless `.part` file by hand to recover. Removing it
+		// makes a re-run the recovery path. It is Kagaz's own temp file, not a
+		// user document, so Global Constraint 3 does not apply.
+		if rmErr := os.Remove(part); rmErr != nil && !os.IsNotExist(rmErr) {
+			return File{}, fmt.Errorf("%w (and the partial file %s could not be removed: %v)", err, part, rmErr)
+		}
+		return File{}, fmt.Errorf("%w (the partial download was discarded; re-run the pull)", err)
 	}
 	if err := os.Rename(part, target); err != nil {
 		return File{}, err
@@ -509,7 +592,15 @@ func (c *Client) fetch(ctx context.Context, opts Options, revision string, want 
 // digest is always recorded; it is additionally *compared* whenever the hub
 // published one, and a mismatch is a hard failure that leaves nothing usable
 // behind.
+//
+// selectFiles guarantees every remoteFile reaching here has a positive size, a
+// published digest, or both, so this never returns Verified having checked
+// nothing. The belt-and-braces check below enforces that invariant locally
+// rather than trusting a caller to keep it.
 func verifyFile(path string, want remoteFile) (File, error) {
+	if want.SHA256 == "" && want.Size <= 0 {
+		return File{}, fmt.Errorf("models: %s: nothing to verify against (no published size or sha256); refusing to mark it verified", want.Name)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return File{}, err

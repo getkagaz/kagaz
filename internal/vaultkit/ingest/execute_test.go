@@ -1,7 +1,9 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 
 	"os"
 	"path/filepath"
@@ -341,5 +343,129 @@ func TestExecuteWithoutAnEngineIsAnError(t *testing.T) {
 	p.Engine = nil
 	if _, err := p.Execute(props); err == nil || !strings.Contains(err.Error(), "move engine") {
 		t.Fatalf("Execute without an engine = %v, want a clear error", err)
+	}
+}
+
+// TestExecuteRefusesADestinationOutsideTheVault hardens the mutating half of
+// the API against the caller it is about to get: a CLI that lets a user edit a
+// proposal before approving it. An unchecked Dest is an arbitrary file write
+// through a tool whose whole promise is that it only moves documents inside
+// your vault.
+func TestExecuteRefusesADestinationOutsideTheVault(t *testing.T) {
+	p, inbox, vault := testPipeline(t, standardSources())
+	props := analyze(t, p, inbox)
+
+	var good Proposal
+	for _, prop := range props {
+		if !prop.Skip {
+			good = prop
+			break
+		}
+	}
+	if good.Dest == "" {
+		t.Fatal("no usable proposal")
+	}
+
+	outside := filepath.Join(filepath.Dir(vault), "escaped.pdf")
+	tests := []struct {
+		name string
+		dest string
+		want string
+	}{
+		{"a sibling of the vault", outside, "outside the vault root"},
+		{"a traversal out of the vault", filepath.Join(vault, "..", "escaped.pdf"), "outside the vault root"},
+		{"an absolute path elsewhere", filepath.Join(t.TempDir(), "elsewhere.pdf"), "outside the vault root"},
+		{"the vault root itself", vault, "outside the vault root"},
+		{"a relative path", "Financial/x.pdf", "not an absolute path"},
+		{"inside the staging area", filepath.Join(p.Cfg.StagingDir(), "x.pdf"), "reserves for its own bookkeeping"},
+		{"inside the manifest directory", filepath.Join(p.Cfg.ManifestDir(), "x.pdf"), "reserves for its own bookkeeping"},
+		{"a sidecar path", filepath.Join(vault, "Financial", ".x.pdf.meta.yaml"), "sidecar path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bad := good
+			bad.Dest = tt.dest
+
+			res, err := p.Execute([]Proposal{bad})
+			if err == nil {
+				t.Fatalf("Execute accepted destination %q", tt.dest)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %v, want it to mention %q", err, tt.want)
+			}
+			// The refusal happens before the manifest is written, so nothing
+			// at all was done.
+			if res.ManifestPath() != "" {
+				t.Error("a rejected batch still wrote a manifest")
+			}
+			if _, err := os.Stat(tt.dest); err == nil && tt.dest != vault {
+				t.Errorf("something was written to %q", tt.dest)
+			}
+			if _, err := os.Stat(good.Source); err != nil {
+				t.Errorf("the source was moved despite the refusal: %v", err)
+			}
+		})
+	}
+}
+
+// TestExecuteRechecksTagsAgainstTheVocabulary: Analyze already filtered the
+// tags, but a caller may have edited the proposal since, and an uncontrolled
+// vocabulary is what makes saved searches unreliable.
+func TestExecuteRechecksTagsAgainstTheVocabulary(t *testing.T) {
+	p, inbox, _ := testPipeline(t, standardSources())
+	props := analyze(t, p, inbox)
+
+	edited := make([]Proposal, 0, len(props))
+	for _, prop := range props {
+		if !prop.Skip {
+			prop.Tags = append(append([]string(nil), prop.Tags...), "not-in-the-vocabulary")
+		}
+		edited = append(edited, prop)
+	}
+
+	res, err := p.Execute(edited)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(res.Filed) == 0 {
+		t.Fatal("nothing was filed")
+	}
+	for _, prop := range res.Filed {
+		for _, tag := range prop.Tags {
+			if tag == "not-in-the-vocabulary" {
+				t.Errorf("%s: an out-of-vocabulary tag survived to execution", filepath.Base(prop.Dest))
+			}
+		}
+		found := false
+		for _, d := range prop.DroppedTags {
+			if d.Tag == "not-in-the-vocabulary" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: the rejected tag was discarded silently instead of reported: %+v",
+				filepath.Base(prop.Dest), prop.DroppedTags)
+		}
+	}
+}
+
+// TestAnalyzeReportsCancellation: a cancelled batch must say it was cancelled,
+// not come back as N documents that look unreadable.
+func TestAnalyzeReportsCancellation(t *testing.T) {
+	p, inbox, _ := testPipeline(t, standardSources())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	props, err := p.Analyze(ctx, []string{inbox})
+	if err == nil {
+		t.Fatalf("a cancelled Analyze returned %d proposals and no error", len(props))
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want it to wrap context.Canceled", err)
+	}
+	if props != nil {
+		t.Errorf("a cancelled Analyze returned proposals: %+v", props)
 	}
 }

@@ -221,9 +221,10 @@ func (s *Store) WriteManifest(repo string, m *Manifest) error {
 // Ready reports whether repo is completely downloaded and verified, and
 // returns the manifest when it is. It is deliberately strict: status must be
 // ready, every recorded file must be verified and still present at the
-// recorded size, and the two files the Swift helper insists on (config.json
-// and at least one .safetensors) must be among them. Anything less is "not
-// ready", which makes a re-pull the recovery path for every partial state.
+// recorded size, and the two files the Swift helper insists on (a *top-level*
+// config.json and at least one *top-level* .safetensors) must be among them.
+// Anything less is "not ready", which makes a re-pull the recovery path for
+// every partial state.
 func (s *Store) Ready(repo string) (bool, *Manifest, error) {
 	m, err := s.ReadManifest(repo)
 	if err != nil || m == nil {
@@ -245,10 +246,10 @@ func (s *Store) Ready(repo string) (bool, *Manifest, error) {
 		if err != nil || st.Size() != f.Size {
 			return false, m, nil
 		}
-		if f.Name == "config.json" {
+		if isTopLevelConfig(f.Name) {
 			hasConfig = true
 		}
-		if strings.HasSuffix(f.Name, ".safetensors") {
+		if isTopLevelWeights(f.Name) {
 			hasWeights = true
 		}
 	}

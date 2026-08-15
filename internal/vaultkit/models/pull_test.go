@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 )
 
 // fakeHub is a stand-in for the Hugging Face hub. Every test in this file runs
@@ -39,6 +41,11 @@ type fakeHub struct {
 	ignoreRange bool
 	// extraSiblings are advertised without existing, e.g. a traversing name.
 	extraSiblings []map[string]any
+	// omitLFS suppresses the published sha256 for a file, as the real hub does
+	// for small non-LFS files like config.json and merges.txt.
+	omitLFS map[string]bool
+	// omitSize suppresses the published size for a file.
+	omitSize map[string]bool
 
 	requests   []string
 	rangeAsked map[string]int64
@@ -52,6 +59,8 @@ func newFakeHub(t *testing.T, repo string, files map[string][]byte) *fakeHub {
 		files:         files,
 		oidOverride:   map[string]string{},
 		truncateAfter: map[string]int{},
+		omitLFS:       map[string]bool{},
+		omitSize:      map[string]bool{},
 		rangeAsked:    map[string]int64{},
 	}
 }
@@ -97,11 +106,14 @@ func (h *fakeHub) serveMetadata(w http.ResponseWriter, r *http.Request) {
 		if o, ok := h.oidOverride[name]; ok {
 			oid = o
 		}
-		siblings = append(siblings, map[string]any{
-			"rfilename": name,
-			"size":      len(body),
-			"lfs":       map[string]any{"oid": oid, "size": len(body)},
-		})
+		sib := map[string]any{"rfilename": name}
+		if !h.omitSize[name] {
+			sib["size"] = len(body)
+		}
+		if !h.omitLFS[name] {
+			sib["lfs"] = map[string]any{"oid": oid, "size": len(body)}
+		}
+		siblings = append(siblings, sib)
 	}
 	siblings = append(siblings, h.extraSiblings...)
 
@@ -450,18 +462,258 @@ func TestPullRefusesRepoWithoutWeights(t *testing.T) {
 	}
 }
 
-// TestPullRefusesTraversingFilename checks that a server-supplied name is
-// never joined onto a path unchecked. This package writes files from names the
-// network gave it; that is the one place a path-traversal bug would land.
-func TestPullRefusesTraversingFilename(t *testing.T) {
+// TestPullIgnoresNestedAndTraversingNames covers finding 3 and its neighbour.
+//
+// A server-supplied name is never joined onto a path unchecked, and nested
+// paths are dropped entirely: ModelCache.resolve in the Swift helper lists the
+// model directory without recursing, so a nested onnx/model.safetensors that
+// satisfied this package's readiness check would leave the helper reporting
+// model_not_found on a model Kagaz called ready.
+func TestPullIgnoresNestedAndTraversingNames(t *testing.T) {
 	hub := newFakeHub(t, "org/model", modelFiles())
 	hub.extraSiblings = []map[string]any{
 		{"rfilename": "../../../../tmp/kagaz-escape.safetensors", "size": 4},
+		{"rfilename": "onnx/model.safetensors", "size": 4},
+		{"rfilename": "onnx/config.json", "size": 4},
 	}
 	c, _ := testClient(t, hub)
 
+	res, err := c.Pull(context.Background(), Options{Repo: "org/model"})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	for _, f := range res.Manifest.Files {
+		if strings.Contains(f.Name, "/") {
+			t.Errorf("a nested file %q was downloaded; the Swift helper cannot see it", f.Name)
+		}
+	}
+	dir, _ := c.Store.Dir("org/model")
+	if _, err := os.Stat(filepath.Join(dir, "onnx")); err == nil {
+		t.Error("a nested directory was created in the model cache")
+	}
+	if _, err := os.Stat("/tmp/kagaz-escape.safetensors"); err == nil {
+		t.Fatal("a traversing filename escaped the model directory")
+	}
+}
+
+// TestPullRefusesRepoWhoseOnlyWeightsAreNested is the other half of finding 3:
+// if the top level has no .safetensors, "ready" must not be written even
+// though a nested one exists.
+func TestPullRefusesRepoWhoseOnlyWeightsAreNested(t *testing.T) {
+	hub := newFakeHub(t, "org/model", map[string][]byte{
+		"config.json":            []byte("{}"),
+		"onnx/model.safetensors": []byte("nested weights"),
+	})
+	c, _ := testClient(t, hub)
+
+	_, err := c.Pull(context.Background(), Options{Repo: "org/model"})
+	if err == nil {
+		t.Fatal("Pull accepted a repo whose only weights are nested")
+	}
+	if !strings.Contains(err.Error(), "top-level") {
+		t.Fatalf("error does not explain the top-level requirement: %v", err)
+	}
+	if ready, _, _ := c.Store.Ready("org/model"); ready {
+		t.Fatal("a repo with no top-level weights reported ready")
+	}
+}
+
+// TestPullRefusesAFileItCannotVerify is finding 1. A file with neither a
+// published sha256 nor a published size cannot be checked against anything, and
+// verifyFile would previously have marked it Verified having compared nothing.
+func TestPullRefusesAFileItCannotVerify(t *testing.T) {
+	hub := newFakeHub(t, "org/model", modelFiles())
+	hub.omitLFS["config.json"] = true
+	hub.omitSize["config.json"] = true
+	c, _ := testClient(t, hub)
+
+	_, err := c.Pull(context.Background(), Options{Repo: "org/model"})
+	if err == nil {
+		t.Fatal("Pull accepted a file it had no way to verify")
+	}
+	for _, want := range []string{"config.json", "sha256"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error is missing %q: %v", want, err)
+		}
+	}
+	if ready, _, _ := c.Store.Ready("org/model"); ready {
+		t.Fatal("an unverifiable model reported ready")
+	}
+}
+
+// TestPullAcceptsASizeOnlyFile is the common real case the rule above must not
+// break: the hub publishes no lfs.oid for small files like config.json and
+// merges.txt, only a size. Those still download, are size-checked, and have
+// their computed digest recorded.
+func TestPullAcceptsASizeOnlyFile(t *testing.T) {
+	files := modelFiles()
+	hub := newFakeHub(t, "org/model", files)
+	hub.omitLFS["config.json"] = true
+	hub.omitLFS["tokenizer.json"] = true
+	c, _ := testClient(t, hub)
+
+	res, err := c.Pull(context.Background(), Options{Repo: "org/model"})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if res.Manifest.Status != StatusReady {
+		t.Fatalf("Status = %q, want ready", res.Manifest.Status)
+	}
+	for _, f := range res.Manifest.Files {
+		if f.SHA256 != sha256hex(files[f.Name]) {
+			t.Errorf("%s: recorded sha256 does not match the bytes on disk", f.Name)
+		}
+		if !f.Verified {
+			t.Errorf("%s: not marked verified", f.Name)
+		}
+	}
+}
+
+// TestPullDetectsATruncatedSizeOnlyFile proves the size check is doing real
+// work for the files that have no published digest.
+func TestPullDetectsATruncatedSizeOnlyFile(t *testing.T) {
+	hub := newFakeHub(t, "org/model", modelFiles())
+	hub.omitLFS["tokenizer.json"] = true
+	hub.truncateAfter["tokenizer.json"] = 3
+	c, _ := testClient(t, hub)
+
 	if _, err := c.Pull(context.Background(), Options{Repo: "org/model"}); err == nil {
-		t.Fatal("Pull accepted a traversing filename")
+		t.Fatal("Pull accepted a truncated file that had no published digest")
+	}
+	if ready, _, _ := c.Store.Ready("org/model"); ready {
+		t.Fatal("a truncated download reported ready")
+	}
+}
+
+// TestPullRecoversFromAWedgedPartFile is finding 2. A `.part` of exactly the
+// right size but the wrong content makes the server answer 416, so no bytes
+// are written and verification fails. If the bad `.part` survives that, every
+// later pull fails identically and only manual deletion recovers.
+func TestPullRecoversFromAWedgedPartFile(t *testing.T) {
+	files := modelFiles()
+	hub := newFakeHub(t, "org/model", files)
+	c, _ := testClient(t, hub)
+
+	dir, _ := c.Store.Dir("org/model")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	part := filepath.Join(dir, "model.safetensors.part")
+	wrong := []byte(strings.Repeat("X", len(files["model.safetensors"])))
+	if err := os.WriteFile(part, wrong, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.Pull(context.Background(), Options{Repo: "org/model"}); err == nil {
+		t.Fatal("Pull accepted a wedged .part file")
+	}
+	if _, err := os.Stat(part); err == nil {
+		t.Fatal("the bad .part file survived; every later pull would fail the same way")
+	}
+
+	// And the very next run succeeds without any manual cleanup.
+	res, err := c.Pull(context.Background(), Options{Repo: "org/model"})
+	if err != nil {
+		t.Fatalf("second Pull did not recover: %v", err)
+	}
+	if res.Manifest.Status != StatusReady {
+		t.Fatalf("Status = %q, want ready", res.Manifest.Status)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "model.safetensors"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(files["model.safetensors"]) {
+		t.Fatal("the recovered file has the wrong content")
+	}
+}
+
+// TestPullDiscardsPartialsFromAnotherRevision is the splice scenario: an
+// interrupted pull of revision A followed by a pull of revision B must not
+// append B's bytes onto A's prefix.
+func TestPullDiscardsPartialsFromAnotherRevision(t *testing.T) {
+	filesA := modelFiles()
+	hub := newFakeHub(t, "org/model", filesA)
+	hub.truncateAfter["model.safetensors"] = 1000
+	c, _ := testClient(t, hub)
+
+	if _, err := c.Pull(context.Background(), Options{Repo: "org/model"}); err == nil {
+		t.Fatal("interrupted Pull returned no error")
+	}
+	dir, _ := c.Store.Dir("org/model")
+	if _, err := os.Stat(filepath.Join(dir, "model.safetensors.part")); err != nil {
+		t.Fatalf("expected a .part file from the interrupted run: %v", err)
+	}
+
+	// Revision B: a different commit with different weights of the same length.
+	filesB := modelFiles()
+	filesB["model.safetensors"] = []byte(strings.Repeat("WEIGHTS-", 4096))
+	hub.mu.Lock()
+	hub.sha = "89abcdef89abcdef89abcdef89abcdef89abcdef"
+	hub.files = filesB
+	hub.mu.Unlock()
+
+	res, err := c.Pull(context.Background(), Options{Repo: "org/model"})
+	if err != nil {
+		t.Fatalf("Pull of the second revision: %v", err)
+	}
+	if res.Revision != hub.sha {
+		t.Fatalf("Revision = %q, want %q", res.Revision, hub.sha)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "model.safetensors"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(filesB["model.safetensors"]) {
+		t.Fatalf("revision B's file is spliced or wrong (%d bytes)", len(got))
+	}
+	// Nothing may reuse a file verified under the previous revision either.
+	if len(res.Reused) != 0 {
+		t.Errorf("Reused = %v across a revision change, want nothing", res.Reused)
+	}
+}
+
+// TestPullHonoursContextCancellation makes sure a cancelled pull stops rather
+// than running to completion.
+func TestPullHonoursContextCancellation(t *testing.T) {
+	hub := newFakeHub(t, "org/model", modelFiles())
+	c, _ := testClient(t, hub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := c.Pull(ctx, Options{Repo: "org/model"}); err == nil {
+		t.Fatal("a cancelled Pull returned no error")
+	}
+	if ready, _, _ := c.Store.Ready("org/model"); ready {
+		t.Fatal("a cancelled Pull reported ready")
+	}
+}
+
+// TestPinnedRevisionForTheDefaultModel enforces the documented promise rather
+// than leaving it to memory.
+//
+// docs/model-use.md says `kagaz model pull` downloads from a pinned repo *and
+// revision*. pinnedRevisions is deliberately empty because no maintainer has
+// yet verified a commit sha for the default model, and inventing one here
+// would 404 for every user. To close the gap: fetch
+// https://huggingface.co/api/models/mlx-community/Qwen2.5-3B-Instruct-4bit/revision/main,
+// take .sha, confirm it in the hub UI, add the entry to pinnedRevisions, and
+// this test starts asserting instead of skipping.
+func TestPinnedRevisionForTheDefaultModel(t *testing.T) {
+	rev, ok := PinnedRevision(config.DefaultMLXModel)
+	if !ok || rev == "" {
+		t.Skipf("no build pin for %s yet; docs/model-use.md promises a pinned revision. "+
+			"Add a verified commit sha to pinnedRevisions (see this test's doc comment) to close the gap.",
+			config.DefaultMLXModel)
+	}
+	if len(rev) != 40 {
+		t.Fatalf("pinned revision %q is not a 40-character commit sha", rev)
+	}
+	for _, r := range rev {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Fatalf("pinned revision %q is not lowercase hex", rev)
+		}
 	}
 }
 

@@ -81,10 +81,22 @@ func TestOllamaPullDelegatesAndStreamsStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var seen []string
-	p := &OllamaPuller{Endpoint: srv.URL, client: srv.Client()}
+	var seen, logged []string
+	p := &OllamaPuller{
+		Endpoint: srv.URL,
+		Log:      func(s string) { logged = append(logged, s) },
+		client:   srv.Client(),
+	}
 	if err := p.Pull(context.Background(), "llama3.2", func(s string) { seen = append(seen, s) }); err != nil {
 		t.Fatalf("Pull: %v", err)
+	}
+	// The informational licence note is printed first, and to Log rather than
+	// into the progress stream.
+	if len(logged) == 0 || !strings.Contains(logged[0], "License") {
+		t.Fatalf("no licence note was printed: %v", logged)
+	}
+	if !strings.Contains(logged[0], "llama3.2") {
+		t.Errorf("the licence note does not name the model: %q", logged[0])
 	}
 	if gotModel != "llama3.2" {
 		t.Fatalf("daemon got model %q, want llama3.2", gotModel)
@@ -114,5 +126,55 @@ func TestOllamaPullRejectsEmptyModel(t *testing.T) {
 	p := &OllamaPuller{Endpoint: "http://localhost:11434"}
 	if err := p.Pull(context.Background(), "  ", nil); err == nil {
 		t.Fatal("Pull accepted an empty model name")
+	}
+}
+
+// TestOllamaPullPrintsTheLicenseNoteWithoutALogger checks the fallback: a
+// caller that supplies only a progress callback still sees the note rather than
+// losing it.
+func TestOllamaPullPrintsTheLicenseNoteWithoutALogger(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	var seen []string
+	p := &OllamaPuller{Endpoint: srv.URL, client: srv.Client()}
+	if err := p.Pull(context.Background(), "llama3.2", func(s string) { seen = append(seen, s) }); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if len(seen) == 0 || !strings.Contains(seen[0], "License") {
+		t.Fatalf("the licence note was lost when Log was nil: %v", seen)
+	}
+}
+
+func TestOllamaLicenseNote(t *testing.T) {
+	tests := []struct {
+		model    string
+		wantLink bool
+		wantIn   string
+	}{
+		{model: "llama3.2", wantLink: true, wantIn: "https://ollama.com/library/llama3.2"},
+		{model: "llama3.2:3b", wantLink: true, wantIn: "https://ollama.com/library/llama3.2"},
+		// A model from another registry has no ollama.com page, and no link is
+		// invented for it.
+		{model: "hf.co/acme/some-model:q4_K_M", wantLink: false, wantIn: "consult the model's publisher"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			note := OllamaLicenseNote(tt.model)
+			if !strings.Contains(note, tt.model) {
+				t.Errorf("note does not name the model:\n%s", note)
+			}
+			if !strings.Contains(note, tt.wantIn) {
+				t.Errorf("note is missing %q:\n%s", tt.wantIn, note)
+			}
+			if strings.Contains(note, "ollama.com/library") != tt.wantLink {
+				t.Errorf("link presence = %v, want %v:\n%s", !tt.wantLink, tt.wantLink, note)
+			}
+			if !strings.Contains(note, "informational") {
+				t.Errorf("note does not say it is informational:\n%s", note)
+			}
+		})
 	}
 }

@@ -52,9 +52,9 @@ tags:
   companies:
     - acme-corp
   fiscal_years:
-    - fy-2024
-    - fy-2025
-    - fy-2026
+    - fy2024
+    - fy2025
+    - fy2026
 structure:
   financial:
     path: Financial
@@ -272,8 +272,8 @@ func TestAnalyzeProposalContents(t *testing.T) {
 		if got.Dest != want {
 			t.Errorf("dest = %q, want %q", got.Dest, want)
 		}
-		if !contains(got.Tags, "alex-rao") || !contains(got.Tags, "fy-2024") || !contains(got.Tags, "active") {
-			t.Errorf("tags = %v, want alex-rao, fy-2024 and active", got.Tags)
+		if !contains(got.Tags, "alex-rao") || !contains(got.Tags, "fy2024") || !contains(got.Tags, "active") {
+			t.Errorf("tags = %v, want alex-rao, fy2024 and active", got.Tags)
 		}
 		if got.Guessed() {
 			t.Errorf("proposal flagged as guessed although every value came from an extracted field")

@@ -52,6 +52,10 @@ type OllamaPuller struct {
 	// Endpoint is the daemon's base URL, e.g. http://localhost:11434.
 	Endpoint string
 
+	// Log receives the informational license note and any other human-readable
+	// lines. Nil falls back to the progress callback, and then to discarding.
+	Log func(string)
+
 	// client is a test seam; nil means localOnlyClient.
 	client *http.Client
 }
@@ -59,6 +63,14 @@ type OllamaPuller struct {
 // Pull asks the local daemon to pull model, streaming its status lines to
 // progress (which may be nil).
 func (p *OllamaPuller) Pull(ctx context.Context, model string, progress func(string)) error {
+	logf := p.Log
+	if logf == nil {
+		logf = progress
+	}
+	if logf == nil {
+		logf = func(string) {}
+	}
+
 	base, err := RequireLocalhost(p.Endpoint)
 	if err != nil {
 		return err
@@ -66,6 +78,12 @@ func (p *OllamaPuller) Pull(ctx context.Context, model string, progress func(str
 	if strings.TrimSpace(model) == "" {
 		return fmt.Errorf("models: no ollama model named")
 	}
+
+	// The same informational, non-gating note the MLX path prints. Kagaz is not
+	// fetching these weights -- the local daemon is -- but the user is still
+	// acquiring a third-party model on Kagaz's prompting, and is still the one
+	// responsible for its licence.
+	logf(OllamaLicenseNote(model))
 
 	body, err := json.Marshal(map[string]any{"model": model, "stream": true})
 	if err != nil {

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 	"github.com/getkagaz/kagaz/internal/vaultkit/conventions"
@@ -315,9 +317,19 @@ func cleanStem(stem, docType string, owners []string) string {
 		return ""
 	}
 	for i, w := range kept {
-		kept[i] = strings.ToUpper(w[:1]) + w[1:]
+		kept[i] = upperFirst(w)
 	}
 	return strings.Join(kept, " ")
+}
+
+// upperFirst capitalises the first rune. It is rune-aware because a stem token
+// can begin with a multi-byte character, where slicing the first byte would
+// produce invalid UTF-8 in a filename.
+func upperFirst(s string) string {
+	for i, r := range s {
+		return string(unicode.ToUpper(r)) + s[i+utf8.RuneLen(r):]
+	}
+	return s
 }
 
 // isDateish reports whether a stem token is a date fragment rather than part of
@@ -340,23 +352,80 @@ func isDateish(tok string) bool {
 // Matching helpers
 // ---------------------------------------------------------------------------
 
-// normalizeForMatch lowercases and reduces every run of non-alphanumeric
-// characters to one space, so "Alex_Rao-2024" and "ALEX RAO 2024" compare
-// equal on the parts that matter.
+// latinFolds maps Latin letters carrying a diacritic to their unaccented
+// form, so a name typed with accents in vault.yaml still matches the same name
+// typed without them (or mangled by OCR), which is common in both directions.
+//
+// Only Latin script is folded. Every other script -- Cyrillic, Greek, Arabic,
+// Devanagari, Han, Hangul, Kana -- is kept verbatim by normalizeForMatch, which
+// is the important half: Kagaz is a global tool, and an earlier version of this
+// function dropped every non-ASCII letter, which turned wholly non-Latin names
+// into the empty string (matching nothing, ever) and "Anaïs Dupont" into
+// "ana s dupont", which word-matched a configured "Ana Dupont" and filed the
+// document into the wrong person's folder with a confident explanation.
+var latinFolds = buildFolds()
+
+func buildFolds() map[rune]string {
+	groups := []struct{ folded, runes string }{
+		{"a", "àáâãäåāăą"},
+		{"ae", "æ"},
+		{"c", "çćĉċč"},
+		{"d", "ďđð"},
+		{"e", "èéêëēĕėęě"},
+		{"g", "ĝğġģ"},
+		{"h", "ĥħ"},
+		{"i", "ìíîïĩīĭįı"},
+		{"ij", "ĳ"},
+		{"j", "ĵ"},
+		{"k", "ķĸ"},
+		{"l", "ĺļľŀł"},
+		{"n", "ñńņňŋ"},
+		{"o", "òóôõöøōŏő"},
+		{"oe", "œ"},
+		{"r", "ŕŗř"},
+		{"s", "śŝşš"},
+		{"ss", "ß"},
+		{"t", "ţťŧ"},
+		{"th", "þ"},
+		{"u", "ùúûüũūŭůűų"},
+		{"w", "ŵ"},
+		{"y", "ýÿŷ"},
+		{"z", "źżž"},
+	}
+	out := map[rune]string{}
+	for _, g := range groups {
+		for _, r := range g.runes {
+			out[r] = g.folded
+		}
+	}
+	return out
+}
+
+// normalizeForMatch lowercases, folds Latin diacritics, and reduces every run
+// of non-letter, non-digit characters to one space, so "Alex_Rao-2024",
+// "ALEX RAO 2024" and "Anaïs" / "Anais" compare equal on the parts that matter.
+//
+// Letters outside Latin are preserved rather than discarded: dropping them
+// would make a non-Latin name normalize to the empty string, which cannot match
+// and cannot be diagnosed.
 func normalizeForMatch(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	space := true
 	for _, r := range strings.ToLower(s) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		if folded, ok := latinFolds[r]; ok {
+			b.WriteString(folded)
+			space = false
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 			space = false
-		default:
-			if !space {
-				b.WriteByte(' ')
-				space = true
-			}
+			continue
+		}
+		if !space {
+			b.WriteByte(' ')
+			space = true
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -378,12 +447,13 @@ func clip(s string, n int) string {
 		return s
 	}
 	s = s[:n]
-	// Drop the trailing continuation bytes, then the start byte they belonged
-	// to, so the result never ends in half a rune.
-	for len(s) > 0 && s[len(s)-1]&0xC0 == 0x80 {
-		s = s[:len(s)-1]
-	}
-	if len(s) > 0 && s[len(s)-1] >= 0x80 {
+	// Drop a trailing partial rune so the result is never invalid UTF-8. At
+	// most utf8.UTFMax-1 bytes are shed.
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
 		s = s[:len(s)-1]
 	}
 	return s
