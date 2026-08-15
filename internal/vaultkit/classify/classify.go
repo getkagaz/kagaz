@@ -18,6 +18,17 @@
 //     lying backend degrades to rules, and an unconfident rules answer degrades
 //     to doctypes.Unclassified with zero confidence. Ingest is never failed by
 //     a classifier problem.
+//
+// # min_confidence applies to the rules tier too
+//
+// classify.min_confidence gates the *rules* answer as well as the model's. At
+// the default 0.5 that makes rules effectively pattern-or-strong-keyword only:
+// doctypes.Catalog.Classify scores a lone weak keyword match below 0.5, so it
+// becomes doctypes.Unclassified rather than a filed document. That is
+// deliberate. A half-sure keyword guess is precisely what "never invent a
+// category" (Global Constraint 8) exists to prevent, and an unclassified
+// document is visible and fixable in a way that a confidently misfiled one is
+// not. Lower classify.min_confidence to accept weaker rules matches.
 package classify
 
 import (
@@ -36,10 +47,11 @@ import (
 // feeding the Go core fields that mean something different.
 const Contract = 1
 
-// maxText bounds how much document text is handed to a model backend. A
-// doctype is decided by the first page in practice, and an unbounded prompt is
-// a reliable way to make a local model slow or to blow its context window.
-// Rules always see the full text.
+// maxText bounds how much document text is handed to a model backend, in
+// bytes (not runes -- it is compared against len(), and clipping then backs up
+// to the nearest rune boundary). A doctype is decided by the first page in
+// practice, and an unbounded prompt is a reliable way to make a local model
+// slow or to blow its context window. Rules always see the full text.
 const maxText = 20000
 
 // Request is one classification job.

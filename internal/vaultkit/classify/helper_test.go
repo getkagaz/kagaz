@@ -4,127 +4,67 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
 
-// withoutMLXHelper arranges for MLXHelperPath to find nothing. It skips when a
-// real helper happens to be installed in the Homebrew prefix on this machine.
-func withoutMLXHelper(t *testing.T) {
+// skipIfMLXHelperInstalled skips when a real MLX helper is in the Homebrew
+// prefix, which would make a "not found" expectation wrong on that machine.
+func skipIfMLXHelperInstalled(t *testing.T) {
 	t.Helper()
-	for _, dir := range mlxHelperPrefixes {
-		if isExecutableFile(filepath.Join(dir, MLXHelperBinary)) {
-			t.Skipf("%s is installed in %s; this test needs it absent", MLXHelperBinary, dir)
+	if fi, err := os.Stat(filepath.Join("/opt/homebrew/bin", MLXHelperBinary)); err == nil && !fi.IsDir() {
+		t.Skipf("%s is installed in /opt/homebrew/bin; this test needs it absent", MLXHelperBinary)
+	}
+}
+
+// TestMLXHelperPathUsesSharedDiscovery checks the binding between the
+// classify-side constants and ocr.FindHelper, which owns the search order.
+// The order itself is tested once, in ocr's discovery_test.go.
+func TestMLXHelperPathUsesSharedDiscovery(t *testing.T) {
+	skipIfMLXHelperInstalled(t)
+
+	t.Run("environment override", func(t *testing.T) {
+		dir := t.TempDir()
+		want := filepath.Join(dir, MLXHelperBinary)
+		if err := os.WriteFile(want, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("writing fake helper: %v", err)
 		}
-	}
-	t.Setenv(MLXHelperPathEnv, "")
-	stubLookPath(t, nil)
-	stubExecutable(t, filepath.Join(t.TempDir(), "kagaz"))
-}
-
-func stubExecutable(t *testing.T, path string) {
-	t.Helper()
-	orig := osExecutable
-	osExecutable = func() (string, error) { return path, nil }
-	t.Cleanup(func() { osExecutable = orig })
-}
-
-func stubLookPath(t *testing.T, table map[string]string) {
-	t.Helper()
-	orig := lookPath
-	lookPath = func(name string) (string, error) {
-		if p, ok := table[name]; ok {
-			return p, nil
-		}
-		return "", exec.ErrNotFound
-	}
-	t.Cleanup(func() { lookPath = orig })
-}
-
-func writeFakeMLXHelper(t *testing.T, dir string) string {
-	t.Helper()
-	path := filepath.Join(dir, MLXHelperBinary)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("writing fake helper: %v", err)
-	}
-	return path
-}
-
-func TestMLXHelperPathSearchOrder(t *testing.T) {
-	t.Run("environment override wins", func(t *testing.T) {
-		withoutMLXHelper(t)
-		want := writeFakeMLXHelper(t, t.TempDir())
 		t.Setenv(MLXHelperPathEnv, want)
 
 		got, ok := MLXHelperPath()
 		if !ok || got != want {
 			t.Fatalf("MLXHelperPath() = (%q, %v), want (%q, true)", got, ok, want)
 		}
+		viaOCR, okOCR := ocr.FindHelper(MLXHelperBinary, MLXHelperPathEnv)
+		if viaOCR != got || okOCR != ok {
+			t.Fatalf("MLXHelperPath() = %q, ocr.FindHelper() = %q; they must be the same lookup", got, viaOCR)
+		}
 	})
 
-	t.Run("bad environment override does not fall through", func(t *testing.T) {
-		withoutMLXHelper(t)
+	t.Run("bad override does not fall through", func(t *testing.T) {
+		skipIfMLXHelperInstalled(t)
 		t.Setenv(MLXHelperPathEnv, filepath.Join(t.TempDir(), "missing"))
 		if got, ok := MLXHelperPath(); ok {
 			t.Fatalf("MLXHelperPath() = (%q, true), want not found", got)
 		}
 	})
-
-	t.Run("sibling of the running executable", func(t *testing.T) {
-		withoutMLXHelper(t)
-		dir := t.TempDir()
-		want := writeFakeMLXHelper(t, dir)
-		stubExecutable(t, filepath.Join(dir, "kagaz"))
-
-		got, ok := MLXHelperPath()
-		if !ok || got != want {
-			t.Fatalf("MLXHelperPath() = (%q, %v), want (%q, true)", got, ok, want)
-		}
-	})
-
-	t.Run("PATH", func(t *testing.T) {
-		withoutMLXHelper(t)
-		want := writeFakeMLXHelper(t, t.TempDir())
-		stubLookPath(t, map[string]string{MLXHelperBinary: want})
-
-		got, ok := MLXHelperPath()
-		if !ok || got != want {
-			t.Fatalf("MLXHelperPath() = (%q, %v), want (%q, true)", got, ok, want)
-		}
-	})
-
-	t.Run("absent everywhere", func(t *testing.T) {
-		withoutMLXHelper(t)
-		if got, ok := MLXHelperPath(); ok {
-			t.Fatalf("MLXHelperPath() = (%q, true), want not found", got)
-		}
-	})
 }
 
-func TestMLXHelperPrefixesAreAppleSiliconOnly(t *testing.T) {
-	for _, dir := range mlxHelperPrefixes {
-		if dir == "/usr/local/bin" {
-			t.Fatal("Intel Homebrew prefix must not be probed: Kagaz is Apple-silicon only")
-		}
-	}
-}
-
-// TestExecHelperPipesStdinAndReturnsStdoutOnFailure exercises the real
-// exec path against a shell stub -- not against any Kagaz helper, which does
-// not exist on CI. It is skipped on platforms without /bin/sh.
+// TestExecHelperPipesStdinAndReturnsStdoutOnFailure exercises the real exec
+// path against a shell stub -- not against any Kagaz helper, which does not
+// exist on CI. It is skipped on platforms without a POSIX shell.
 func TestExecHelperPipesStdinAndReturnsStdoutOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
 	}
 	dir := t.TempDir()
 
-	echoStub := filepath.Join(dir, "echo-stub")
-	if err := os.WriteFile(echoStub, []byte("#!/bin/sh\ncat\n"), 0o755); err != nil {
-		t.Fatalf("writing stub: %v", err)
-	}
+	echoStub := writeShellStub(t, dir, "echo-stub", "cat\n")
 	out, err := execHelper(context.Background(), echoStub, nil, "hello stdin")
 	if err != nil {
 		t.Fatalf("execHelper: %v", err)
@@ -133,32 +73,99 @@ func TestExecHelperPipesStdinAndReturnsStdoutOnFailure(t *testing.T) {
 		t.Fatalf("stdout = %q, want the piped stdin", out)
 	}
 
-	failStub := filepath.Join(dir, "fail-stub")
-	script := "#!/bin/sh\nprintf '%s' '{\"contract\":1,\"error\":\"model_unavailable\",\"message\":\"no weights\"}'\nexit 3\n"
-	if err := os.WriteFile(failStub, []byte(script), 0o755); err != nil {
-		t.Fatalf("writing stub: %v", err)
-	}
+	failStub := writeShellStub(t, dir, "fail-stub",
+		"printf '%s' '{\"contract\":1,\"error\":\"model_unavailable\",\"message\":\"no weights\"}'\nexit 3\n")
 	out, err = execHelper(context.Background(), failStub, nil, "")
 	if err == nil {
 		t.Fatal("expected an error from a non-zero exit")
 	}
-	if !strings.Contains(err.Error(), "model_unavailable") {
-		t.Fatalf("error = %q, want the structured error code", err)
+	var failure *ocr.HelperFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("error is %T, want *ocr.HelperFailure", err)
+	}
+	if failure.Code != "model_unavailable" || failure.Message != "no weights" {
+		t.Fatalf("failure = %+v, want the structured code and message", failure)
 	}
 	if !strings.Contains(string(out), "model_unavailable") {
 		t.Fatalf("stdout = %q, want it returned even on failure", out)
 	}
 }
 
-func TestErrNoHelperIsWrappable(t *testing.T) {
-	err := (&Apple{locate: missing}).classifyErr()
-	if !errors.Is(err, ErrNoHelper) {
-		t.Fatalf("error = %v, want ErrNoHelper", err)
+// TestExecHelperTimesOutDespiteOrphanedGrandchild is IMPORTANT 3.
+//
+// The stub spawns a background child that inherits stdout and sleeps far past
+// the deadline. exec.CommandContext kills only the direct child, and cmd.Wait
+// blocks until every writer to the stdout pipe closes it -- so without
+// cmd.WaitDelay this call never returns and ingest stalls with no timeout.
+func TestExecHelperTimesOutDespiteOrphanedGrandchild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	stub := writeShellStub(t, t.TempDir(), "orphan-stub", "sleep 30 &\nsleep 30\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { _, err := execHelper(ctx, stub, nil, ""); done <- err }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected a timeout error")
+		}
+		if !isTimeout(err) {
+			t.Fatalf("error = %v, want a timeout", err)
+		}
+		var failure *ocr.HelperFailure
+		if !errors.As(err, &failure) || failure.Code != CodeTimeout {
+			t.Fatalf("error = %v (%T), want an *ocr.HelperFailure with code %q", err, err, CodeTimeout)
+		}
+		// WaitDelay allows a short grace period; anything near the stub's own
+		// 30s sleep means Wait was blocked on the inherited pipe.
+		if elapsed := time.Since(start); elapsed > 10*time.Second {
+			t.Fatalf("execHelper took %v; it waited on the orphaned grandchild's pipe", elapsed)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("execHelper hung past its deadline: cmd.WaitDelay is not doing its job")
 	}
 }
 
-// classifyErr is a tiny helper so the wrapping test reads clearly.
-func (a *Apple) classifyErr() error {
-	_, err := a.Classify(context.Background(), Request{})
-	return err
+// TestBoundedBufferCapsRetainedOutput checks a chatty helper cannot make us
+// buffer without limit, and that it is never handed a short write.
+func TestBoundedBufferCapsRetainedOutput(t *testing.T) {
+	b := &boundedBuffer{limit: 10}
+	n, err := b.Write([]byte("0123456789abcdef"))
+	if err != nil || n != 16 {
+		t.Fatalf("Write() = (%d, %v), want (16, nil): a short write would EPIPE the child", n, err)
+	}
+	if got := b.String(); got != "0123456789" {
+		t.Fatalf("retained %q, want the first 10 bytes only", got)
+	}
+	if n, err := b.Write([]byte("more")); err != nil || n != 4 {
+		t.Fatalf("Write() after the limit = (%d, %v), want (4, nil)", n, err)
+	}
+	if b.buf.Len() != 10 {
+		t.Fatalf("buffered %d bytes, want the limit of 10", b.buf.Len())
+	}
+}
+
+func TestClassifyErrorsUseTheSharedSentinel(t *testing.T) {
+	if _, err := (&Apple{locate: missing}).Classify(context.Background(), Request{}); !errors.Is(err, ocr.ErrNoHelper) {
+		t.Fatalf("apple error = %v, want ocr.ErrNoHelper", err)
+	}
+	if _, err := (&MLX{Model: "m", locate: missing}).Classify(context.Background(), Request{}); !errors.Is(err, ocr.ErrNoHelper) {
+		t.Fatalf("mlx error = %v, want ocr.ErrNoHelper", err)
+	}
+}
+
+// writeShellStub writes an executable /bin/sh script and returns its path.
+func writeShellStub(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	return path
 }

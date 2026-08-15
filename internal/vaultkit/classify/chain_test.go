@@ -6,9 +6,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 	"github.com/getkagaz/kagaz/internal/vaultkit/doctypes"
+	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
 
 // appleWith builds an Apple backend whose probe reports available and whose
@@ -400,8 +402,8 @@ func TestAppleUnavailableWithoutHelper(t *testing.T) {
 	if !contains(a.detail(), "not found") {
 		t.Errorf("detail() = %q, want it to explain the helper is missing", a.detail())
 	}
-	if _, err := a.Classify(context.Background(), Request{Text: invoiceText}); !errors.Is(err, ErrNoHelper) {
-		t.Fatalf("Classify error = %v, want ErrNoHelper", err)
+	if _, err := a.Classify(context.Background(), Request{Text: invoiceText}); !errors.Is(err, ocr.ErrNoHelper) {
+		t.Fatalf("Classify error = %v, want ocr.ErrNoHelper", err)
 	}
 }
 
@@ -458,5 +460,90 @@ func TestMinConfidenceZeroKeepsEveryMatch(t *testing.T) {
 	}
 	if got.DocType != "passport" || got.Engine != config.EngineApple {
 		t.Fatalf("got %s/%s, want the 0.31-confidence apple answer", got.DocType, got.Engine)
+	}
+}
+
+// TestAppleProbeTimeoutIsNotCached is IMPORTANT 4.
+//
+// The first launch of a freshly installed, notarised Swift binary pays
+// Gatekeeper verification and a cold dyld start. If that one slow probe were
+// cached for the process lifetime, an entire ingest run would classify by rules
+// and write `classifier: rules` into every sidecar with nothing to explain it.
+func TestAppleProbeTimeoutIsNotCached(t *testing.T) {
+	var calls int32
+	a := &Apple{
+		locate: found,
+		run: func(context.Context, string, []string, string) ([]byte, error) {
+			if atomic.AddInt32(&calls, 1) == 1 {
+				return nil, context.DeadlineExceeded // cold start
+			}
+			return fixture(t, "probe_available.json"), nil
+		},
+	}
+
+	if a.Available() {
+		t.Fatal("first Available() = true, want false after a probe timeout")
+	}
+	if !a.Available() {
+		t.Fatal("second Available() = false: a timeout must not be cached for the process lifetime")
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("probe ran %d times, want 2 (retry after a timeout)", got)
+	}
+}
+
+// TestAppleDecodedUnavailableIsCached is the other half: a helper that ran and
+// answered "no" is a settled fact and must not be re-probed per document.
+func TestAppleDecodedUnavailableIsCached(t *testing.T) {
+	var calls int32
+	a := &Apple{
+		locate: found,
+		run: func(context.Context, string, []string, string) ([]byte, error) {
+			atomic.AddInt32(&calls, 1)
+			return fixture(t, "probe_unavailable.json"), nil
+		},
+	}
+	for i := 0; i < 5; i++ {
+		if a.Available() {
+			t.Fatal("Available() = true, want false")
+		}
+	}
+	if !contains(a.detail(), "macOS 26") {
+		t.Errorf("detail() = %q, want the helper's reason", a.detail())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("probe ran %d times, want exactly 1 (a decoded answer is cached)", got)
+	}
+}
+
+// TestProbeTimeoutIsGenerous pins the budget: a tight probe timeout is how the
+// whole-run silent downgrade happens in the first place.
+func TestProbeTimeoutIsGenerous(t *testing.T) {
+	if probeTimeout < 10*time.Second {
+		t.Fatalf("probeTimeout = %v; a cold Gatekeeper-verified launch routinely exceeds a few seconds", probeTimeout)
+	}
+}
+
+// TestMissingHelperIsNotCached lets a helper installed mid-run be noticed; the
+// re-check costs one stat.
+func TestMissingHelperIsNotCached(t *testing.T) {
+	var installed bool
+	a := &Apple{
+		locate: func() (string, bool) {
+			if installed {
+				return "/fake/kagaz-machelper", true
+			}
+			return "", false
+		},
+		run: func(context.Context, string, []string, string) ([]byte, error) {
+			return fixture(t, "probe_available.json"), nil
+		},
+	}
+	if a.Available() {
+		t.Fatal("Available() = true with no helper installed")
+	}
+	installed = true
+	if !a.Available() {
+		t.Fatal("Available() = false after the helper appeared: absence must not be cached")
 	}
 }

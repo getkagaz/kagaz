@@ -9,6 +9,7 @@ import (
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 	"github.com/getkagaz/kagaz/internal/vaultkit/doctypes"
+	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
 
 // invoiceText matches the built-in "invoice" doctype on several keywords, so
@@ -268,12 +269,12 @@ func TestDecodeClassifyResponse(t *testing.T) {
 	}{
 		{name: "good", file: "classify_invoice.json"},
 		{name: "structured error", file: "classify_error.json", wantErr: "Foundation Models are not enabled"},
-		{name: "unknown contract", file: "classify_bad_contract.json", wantErr: "unsupported contract version 2"},
+		{name: "unknown contract", file: "classify_bad_contract.json", wantErr: "helper speaks contract 2"},
 		{name: "malformed json", file: "classify_malformed.json", wantErr: "decoding response"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := decodeClassifyResponse("kagaz-machelper", "apple", fixture(t, tc.file))
+			res, err := decodeClassifyResponse("apple", fixture(t, tc.file))
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -296,7 +297,7 @@ func TestDecodeClassifyResponse(t *testing.T) {
 	}
 
 	t.Run("empty doctype", func(t *testing.T) {
-		_, err := decodeClassifyResponse("kagaz-machelper", "apple", []byte(`{"contract":1,"doctype":"  "}`))
+		_, err := decodeClassifyResponse("apple", []byte(`{"contract":1,"doctype":"  "}`))
 		if err == nil || !contains(err.Error(), "no doctype") {
 			t.Fatalf("error = %v, want a no-doctype error", err)
 		}
@@ -325,14 +326,48 @@ func TestDecodeProbeResponse(t *testing.T) {
 	}
 }
 
-func TestHelperExitErrorPrefersStructuredError(t *testing.T) {
-	err := helperExitError("kagaz-machelper", errors.New("exit status 3"), fixture(t, "classify_error.json"), "some noise")
-	if !contains(err.Error(), "model_unavailable") {
-		t.Fatalf("error = %q, want the structured error code", err)
+func TestHelperFailurePrefersStructuredError(t *testing.T) {
+	err := helperFailure(errors.New("exit status 3"), fixture(t, "classify_error.json"), "some noise")
+	var failure *ocr.HelperFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("error is %T, want *ocr.HelperFailure", err)
 	}
-	err = helperExitError("kagaz-machelper", errors.New("exit status 3"), nil, "boom\nsecond line")
-	if !contains(err.Error(), "boom") || contains(err.Error(), "second line") {
-		t.Fatalf("error = %q, want only the first stderr line", err)
+	if failure.Code != "model_unavailable" {
+		t.Fatalf("Code = %q, want model_unavailable", failure.Code)
+	}
+
+	err = helperFailure(errors.New("exit status 3"), nil, "boom\nsecond line")
+	if !errors.As(err, &failure) {
+		t.Fatalf("error is %T, want *ocr.HelperFailure", err)
+	}
+	if failure.Code != "" || failure.Message != "boom" {
+		t.Fatalf("failure = %+v, want no code and only the first stderr line", failure)
+	}
+}
+
+// TestDecodeFailuresCarryDistinguishableCodes is what lets `kagaz doctor`
+// tell a refusing model from a hung helper from a version mismatch.
+func TestDecodeFailuresCarryDistinguishableCodes(t *testing.T) {
+	tests := map[string]struct {
+		data     []byte
+		wantCode string
+	}{
+		"structured error": {fixture(t, "classify_error.json"), "model_unavailable"},
+		"unknown contract": {fixture(t, "classify_bad_contract.json"), CodeUnsupportedContract},
+		"malformed json":   {fixture(t, "classify_malformed.json"), CodeBadResponse},
+		"missing doctype":  {[]byte(`{"contract":1,"doctype":""}`), CodeBadResponse},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeClassifyResponse("apple", tc.data)
+			var failure *ocr.HelperFailure
+			if !errors.As(err, &failure) {
+				t.Fatalf("error is %T, want *ocr.HelperFailure", err)
+			}
+			if failure.Code != tc.wantCode {
+				t.Fatalf("Code = %q, want %q", failure.Code, tc.wantCode)
+			}
+		})
 	}
 }
 

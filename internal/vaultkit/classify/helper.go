@@ -5,19 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
-
-// ErrNoHelper means the required helper binary is not installed. It is an
-// expected condition on Linux and on a Mac without the optional helpers, not a
-// bug. It mirrors ocr.ErrNoHelper's role for the classify-side binaries.
-var ErrNoHelper = errors.New("kagaz helper not found")
 
 // MLXHelperBinary is the optional Python/MLX sidecar that runs a local
 // quantised LLM. It is a separate binary from kagaz-machelper because it drags
@@ -28,66 +22,45 @@ const MLXHelperBinary = "kagaz-machelper-mlx"
 // development builds and tests. A packaged install never needs it.
 const MLXHelperPathEnv = "KAGAZ_MACHELPER_MLX"
 
-// mlxHelperPrefixes are the fixed directories probed last. Only the
-// Apple-silicon Homebrew prefix is listed: Kagaz is Apple-silicon only, so
-// /usr/local/bin is deliberately not probed.
-var mlxHelperPrefixes = []string{"/opt/homebrew/bin"}
+// maxHelperOutput bounds how much of a helper's stdout is retained. The
+// contract payload is a small JSON object; a helper that streams megabytes at
+// us is malfunctioning, and buffering it unboundedly would be the malfunction
+// becoming ours.
+const maxHelperOutput = 1 << 20 // 1 MiB
 
-// osExecutable is a seam so tests can control the "next to the running binary"
-// probe.
-var osExecutable = os.Executable
+// maxHelperStderr bounds retained stderr. Only the first line is ever reported.
+const maxHelperStderr = 64 << 10
 
-// lookPath is a seam so tests can stub $PATH discovery.
-var lookPath = exec.LookPath
+// helperWaitDelay bounds the gap between killing a helper and giving up on its
+// pipes.
+//
+// exec.CommandContext kills only the direct child. A helper that forks workers
+// (the MLX one loads weights in subprocesses) leaves those workers holding the
+// inherited stdout/stderr pipes, and cmd.Wait blocks until every writer closes
+// them -- so without WaitDelay a timed-out classification hangs forever, past
+// its own deadline, with orphaned workers pinning gigabytes of weights.
+const helperWaitDelay = 3 * time.Second
 
-// MLXHelperPath resolves the kagaz-machelper-mlx binary.
-//
-// This is intentionally parallel to ocr.HelperPath rather than a call into it:
-// the search *order* is shared policy, but the binary name is not, and
-// ocr.HelperPath is hard-wired to kagaz-machelper. The Apple backend in this
-// package calls ocr.HelperPath directly and does not duplicate it.
-//
-// Search order, first hit wins:
-//
-//  1. $KAGAZ_MACHELPER_MLX, if it names an executable file;
-//  2. the directory of the running executable;
-//  3. $PATH;
-//  4. the Homebrew prefix /opt/homebrew/bin.
+// Helper failure codes minted by the Go side, alongside the codes the helper
+// itself reports (`backend_unavailable`, `no_text`, ...). They exist so
+// `kagaz doctor` can tell "the model refused" from "the helper hung" from "the
+// helper is speaking a contract we do not know".
+const (
+	// CodeTimeout means the helper did not answer within its budget.
+	CodeTimeout = "timeout"
+	// CodeBadResponse means the helper's output was not decodable.
+	CodeBadResponse = "bad_response"
+	// CodeUnsupportedContract means the helper spoke a contract version this
+	// build does not understand.
+	CodeUnsupportedContract = "unsupported_contract"
+)
+
+// MLXHelperPath resolves the kagaz-machelper-mlx binary through the
+// repository's single helper-discovery implementation, ocr.FindHelper. The
+// binary name and its override variable live here because the MLX helper is
+// classify's dependency, not OCR's; the search order does not.
 func MLXHelperPath() (string, bool) {
-	if p := os.Getenv(MLXHelperPathEnv); p != "" {
-		if isExecutableFile(p) {
-			return p, true
-		}
-		// An explicit override that does not resolve is a configuration
-		// mistake, not a reason to silently run a different binary.
-		return "", false
-	}
-
-	if exe, err := osExecutable(); err == nil {
-		if p := filepath.Join(filepath.Dir(exe), MLXHelperBinary); isExecutableFile(p) {
-			return p, true
-		}
-	}
-
-	if p, err := lookPath(MLXHelperBinary); err == nil {
-		return p, true
-	}
-
-	for _, dir := range mlxHelperPrefixes {
-		if p := filepath.Join(dir, MLXHelperBinary); isExecutableFile(p) {
-			return p, true
-		}
-	}
-	return "", false
-}
-
-// isExecutableFile reports whether path is a regular file with an execute bit.
-func isExecutableFile(path string) bool {
-	fi, err := os.Stat(path)
-	if err != nil || fi.IsDir() {
-		return false
-	}
-	return fi.Mode().Perm()&0o111 != 0
+	return ocr.FindHelper(MLXHelperBinary, MLXHelperPathEnv)
 }
 
 // helperRunner executes a helper binary with document text on stdin and returns
@@ -101,19 +74,61 @@ type helperRunner func(ctx context.Context, path string, args []string, stdin st
 // execHelper is the production helperRunner.
 //
 // ocr.RunHelper is not reused here: it does not accept stdin, and the classify
-// contract pipes document text in on stdin. Discovery is shared (ocr.HelperPath);
-// invocation is not.
+// contract pipes document text in on stdin. Discovery (ocr.FindHelper), the
+// error type (ocr.HelperFailure) and the sentinel (ocr.ErrNoHelper) are all
+// shared with the ocr package; only the invocation differs.
 func execHelper(ctx context.Context, path string, args []string, stdin string) ([]byte, error) {
-	var stdout, stderr bytes.Buffer
+	stdout := &boundedBuffer{limit: maxHelperOutput}
+	stderr := &boundedBuffer{limit: maxHelperStderr}
+
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin = strings.NewReader(stdin)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), helperExitError(filepath.Base(path), err, stdout.Bytes(), stderr.String())
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	// See helperWaitDelay: without this, an orphaned grandchild holding the
+	// output pipe makes Wait block past the deadline, forever.
+	cmd.WaitDelay = helperWaitDelay
+
+	err := cmd.Run()
+	if err == nil {
+		return stdout.Bytes(), nil
 	}
-	return stdout.Bytes(), nil
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return stdout.Bytes(), &ocr.HelperFailure{
+			Code:    CodeTimeout,
+			Message: "helper did not answer within its time budget",
+			Stdout:  stdout.Bytes(),
+			Err:     ctxErr,
+		}
+	}
+	return stdout.Bytes(), helperFailure(err, stdout.Bytes(), stderr.String())
 }
+
+// boundedBuffer is an io.Writer that keeps at most limit bytes and silently
+// drops the rest. It reports every write as fully accepted so the child is
+// never handed a short-write error, which would turn "chatty helper" into
+// "helper died with EPIPE".
+type boundedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.buf.Len(); room > 0 {
+		if len(p) <= room {
+			b.buf.Write(p)
+		} else {
+			b.buf.Write(p[:room])
+		}
+	}
+	return len(p), nil
+}
+
+// Bytes returns the retained output.
+func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
+
+// String returns the retained output as a string.
+func (b *boundedBuffer) String() string { return b.buf.String() }
 
 // helperResponse is the versioned classify contract (§4.4). The same shape
 // carries a structured error, so a failed helper explains itself instead of
@@ -135,51 +150,61 @@ type helperResponse struct {
 	Message string `json:"message"`
 }
 
-// helperExitError turns a non-zero helper exit into a useful error, preferring
-// the structured error on stdout over the raw exit status.
-func helperExitError(binary string, runErr error, stdout []byte, stderr string) error {
+// helperFailure turns a non-zero helper exit into an *ocr.HelperFailure,
+// preferring the structured error on stdout over the raw exit status, so
+// callers can switch on Code rather than parse a sentence.
+func helperFailure(runErr error, stdout []byte, stderr string) error {
 	var resp helperResponse
 	if err := json.Unmarshal(bytes.TrimSpace(stdout), &resp); err == nil && resp.Error != "" {
-		return fmt.Errorf("%s: %s", binary, describeHelperError(resp))
+		return &ocr.HelperFailure{
+			Code:    resp.Error,
+			Message: resp.Message,
+			Stdout:  stdout,
+			Err:     runErr,
+		}
 	}
-	if s := strings.TrimSpace(stderr); s != "" {
-		return fmt.Errorf("%s: %w: %s", binary, runErr, firstLine(s))
+	return &ocr.HelperFailure{
+		Message: firstLine(strings.TrimSpace(stderr)),
+		Stdout:  stdout,
+		Err:     runErr,
 	}
-	return fmt.Errorf("%s: %w", binary, runErr)
-}
-
-// describeHelperError renders a structured helper error as "message (code)".
-func describeHelperError(resp helperResponse) string {
-	msg := strings.TrimSpace(resp.Message)
-	if msg == "" {
-		return resp.Error
-	}
-	return fmt.Sprintf("%s (%s)", firstLine(msg), resp.Error)
 }
 
 // decodeClassifyResponse turns helper stdout into a Result. Every failure mode
 // -- malformed JSON, an unknown contract version, a structured error, an empty
-// doctype -- returns an error, and every one of those degrades to rules in the
-// Chain rather than failing ingest.
+// doctype -- returns an *ocr.HelperFailure carrying a Code, and every one of
+// those degrades to rules in the Chain rather than failing ingest.
 //
 // engine is the engine string to stamp on the result; the helper's own
 // "engine" field is informational only, since the caller knows which binary and
 // model it invoked and the helper does not get to rename itself.
-func decodeClassifyResponse(binary, engine string, data []byte) (Result, error) {
+func decodeClassifyResponse(engine string, data []byte) (Result, error) {
 	var resp helperResponse
 	if err := json.Unmarshal(bytes.TrimSpace(data), &resp); err != nil {
-		return Result{}, fmt.Errorf("%s classify: decoding response: %w", binary, err)
+		return Result{}, &ocr.HelperFailure{
+			Code:    CodeBadResponse,
+			Message: "decoding response: " + err.Error(),
+			Stdout:  data,
+			Err:     err,
+		}
 	}
 	if resp.Error != "" {
-		return Result{}, fmt.Errorf("%s classify: %s", binary, describeHelperError(resp))
+		return Result{}, &ocr.HelperFailure{Code: resp.Error, Message: resp.Message, Stdout: data}
 	}
 	if resp.Contract != Contract {
-		return Result{}, fmt.Errorf(
-			"%s classify: unsupported contract version %d (this build understands %d); upgrade kagaz or the helper so they match",
-			binary, resp.Contract, Contract)
+		return Result{}, &ocr.HelperFailure{
+			Code: CodeUnsupportedContract,
+			Message: "helper speaks contract " + strconv.Itoa(resp.Contract) + ", this build speaks " + strconv.Itoa(Contract) +
+				"; upgrade kagaz or the helper so they match",
+			Stdout: data,
+		}
 	}
 	if strings.TrimSpace(resp.DocType) == "" {
-		return Result{}, fmt.Errorf("%s classify: response carried no doctype", binary)
+		return Result{}, &ocr.HelperFailure{
+			Code:    CodeBadResponse,
+			Message: "response carried no doctype",
+			Stdout:  data,
+		}
 	}
 	return Result{
 		DocType:    resp.DocType,
@@ -199,10 +224,10 @@ func decodeProbeResponse(data []byte) (available bool, reason string) {
 		return false, "helper probe returned unreadable JSON"
 	}
 	if resp.Error != "" {
-		return false, describeHelperError(resp)
+		return false, describeHelperError(resp.Error, resp.Message)
 	}
 	if resp.Contract != Contract {
-		return false, fmt.Sprintf("helper speaks contract %d, this build speaks %d", resp.Contract, Contract)
+		return false, "helper speaks contract " + strconv.Itoa(resp.Contract) + ", this build speaks " + strconv.Itoa(Contract)
 	}
 	if resp.Available == nil || !*resp.Available {
 		if r := strings.TrimSpace(resp.Reason); r != "" {
@@ -211,6 +236,21 @@ func decodeProbeResponse(data []byte) (available bool, reason string) {
 		return false, "helper reported the backend as unavailable"
 	}
 	return true, ""
+}
+
+// describeHelperError renders a structured helper error as "message (code)".
+func describeHelperError(code, message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return code
+	}
+	return firstLine(message) + " (" + code + ")"
+}
+
+// isTimeout reports whether an error is a deadline or cancellation, including
+// the ocr.HelperFailure wrapper execHelper builds around one.
+func isTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // firstLine keeps an error to one line so CLI output stays readable.

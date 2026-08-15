@@ -6,17 +6,54 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 )
 
+// localOnlyClient is the package's HTTP client for the Ollama classify backend.
+// Two of its settings are load-bearing safety properties, not tuning, and both
+// close a hole that the localhost check alone does not:
+//
+//   - CheckRedirect refuses to follow redirects. Without it, anything answering
+//     on 127.0.0.1:11434 -- a dev proxy, a hijacked port, a malicious local app
+//     -- could reply "307 Location: https://collector.example/" and Go would
+//     replay the request body, which is the document's text plus the catalog,
+//     to a remote host. The localhost check runs once on the endpoint and never
+//     again per hop, so redirects bypass it entirely.
+//   - Proxy is nil. Go's ProxyFromEnvironment bypass exempts genuine loopback
+//     only, so with HTTP_PROXY/ALL_PROXY set, a non-loopback local-looking
+//     endpoint would route every document body through a proxy that may not be
+//     on this machine.
+//
+// http.DefaultClient must never be used here: it does both of those things.
+var localOnlyClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+	Transport: &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 0,
+		MaxIdleConns:          4,
+		IdleConnTimeout:       30 * time.Second,
+	},
+}
+
 // ollamaProbeTimeout bounds the availability check so auto-selection and
 // `kagaz doctor` stay fast when nothing is listening.
 const ollamaProbeTimeout = 1500 * time.Millisecond
+
+// ollamaProbeTTL is how long an availability answer is reused, so a single
+// `kagaz doctor` run -- which asks Available() and then detail() -- probes once
+// rather than twice, while still noticing a server that starts later.
+const ollamaProbeTTL = 5 * time.Second
 
 // ollamaClassifyTimeout bounds one generation. Text models on a laptop are
 // slow; this is generous but finite.
@@ -25,10 +62,15 @@ const ollamaClassifyTimeout = 2 * time.Minute
 // Ollama classifies through a local Ollama server, constraining the model to a
 // JSON schema so its answer is parseable rather than prose.
 //
-// Safety invariant: the endpoint must be loopback. That is enforced at config
-// parse time *and* re-checked here before every request, so no code path can
-// dial a remote host even if a Config were constructed in memory. Document text
-// leaving the machine is the worst failure this codebase can have.
+// Safety invariant: the endpoint must be loopback, and the transport must
+// neither follow redirects nor honour proxy environment variables. That is
+// enforced at config parse time *and* re-checked here before every request, so
+// no code path can send document text to a remote host even if a Config were
+// constructed in memory. Document text leaving the machine is the worst failure
+// this codebase can have.
+//
+// Ollama must not be copied after first use: it caches its probe behind a
+// mutex. Hold it by pointer, as Chain does.
 type Ollama struct {
 	// Endpoint is the Ollama base URL, e.g. http://localhost:11434.
 	Endpoint string
@@ -37,8 +79,14 @@ type Ollama struct {
 	// Timeout bounds one classification; zero means ollamaClassifyTimeout.
 	Timeout time.Duration
 
-	// client is a test seam; nil means http.DefaultClient.
+	// client is a test seam; nil means localOnlyClient.
 	client *http.Client
+
+	// probeMu guards the cached Available() answer.
+	probeMu  sync.Mutex
+	probedAt time.Time
+	probeOK  bool
+	probeWhy string
 }
 
 // Name identifies the backend. It matches config.EngineOllama.
@@ -47,49 +95,119 @@ func (o *Ollama) Name() string { return config.EngineOllama }
 // engine is the string recorded in Result.Engine.
 func (o *Ollama) engine() string { return config.EngineOllama + ":" + o.Model }
 
-// Available reports whether a localhost Ollama server is answering. It is a
-// cheap GET /api/tags with a short timeout and never dials a non-loopback host.
+// Available reports whether a localhost Ollama server is answering *and* has
+// the configured model pulled.
+//
+// The model check is not pedantry. classify.model is one config key shared with
+// the MLX engine and it defaults to an MLX repo path, so a user who sets
+// `engine: ollama` and nothing else has a model name Ollama has never heard of.
+// Without this check the forced-engine guard passes, every /api/generate 404s,
+// and every document silently degrades to rules with no error and no hint.
 func (o *Ollama) Available() bool {
+	ok, _ := o.availability()
+	return ok
+}
+
+// availability returns the cached probe result and the reason when unavailable.
+func (o *Ollama) availability() (bool, string) {
 	if o.Model == "" {
-		return false
+		return false, "no model configured (classify.model)"
 	}
 	base, err := o.baseURL()
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
+
+	o.probeMu.Lock()
+	defer o.probeMu.Unlock()
+	if !o.probedAt.IsZero() && time.Since(o.probedAt) < ollamaProbeTTL {
+		return o.probeOK, o.probeWhy
+	}
+	o.probeOK, o.probeWhy = o.probe(base)
+	o.probedAt = time.Now()
+	return o.probeOK, o.probeWhy
+}
+
+// probe performs GET /api/tags and checks the configured model is listed. The
+// caller holds probeMu.
+func (o *Ollama) probe(base string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), ollamaProbeTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/tags", nil)
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
 	resp, err := o.httpClient().Do(req)
 	if err != nil {
-		return false
+		return false, "no Ollama server responding at " + o.Endpoint
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode == http.StatusOK
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return false, "no Ollama server responding at " + o.Endpoint
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, "Ollama at " + o.Endpoint + " answered " + resp.Status
+	}
+
+	var tags ollamaTags
+	if err := json.Unmarshal(payload, &tags); err != nil {
+		return false, "Ollama at " + o.Endpoint + " returned an unreadable model list"
+	}
+	if !tags.has(o.Model) {
+		return false, "model " + o.Model + " is not pulled; run `ollama pull " + o.Model + "`"
+	}
+	return true, ""
 }
 
 // detail explains the backend's state for `kagaz doctor`.
 func (o *Ollama) detail() string {
-	if o.Model == "" {
-		return "no model configured (classify.model)"
+	ok, why := o.availability()
+	if ok {
+		return o.Endpoint + " (" + o.Model + ")"
 	}
-	if _, err := o.baseURL(); err != nil {
-		return err.Error()
-	}
-	if !o.Available() {
-		return "no Ollama server responding at " + o.Endpoint
-	}
-	return o.Endpoint + " (" + o.Model + ")"
+	return why
 }
 
-// hint names the fix for a forced-but-unavailable ollama engine.
+// hint names the fix for a forced-but-unavailable ollama engine. It names the
+// model, because "not available" most often means "that model is not pulled".
 func (o *Ollama) hint() string {
-	return "start a local Ollama server and run `kagaz model pull --engine ollama`"
+	if o.Model == "" {
+		return "set classify.model and start a local Ollama server"
+	}
+	return "start a local Ollama server and run `ollama pull " + o.Model + "`"
+}
+
+// ollamaTags is the GET /api/tags reply.
+type ollamaTags struct {
+	Models []struct {
+		Name  string `json:"name"`
+		Model string `json:"model"`
+	} `json:"models"`
+}
+
+// has reports whether want is among the pulled models. Ollama reports tagged
+// names ("qwen2.5:3b"), and an untagged request means the ":latest" tag, so
+// both spellings are accepted.
+func (t ollamaTags) has(want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	candidates := []string{want}
+	if !strings.Contains(want, ":") {
+		candidates = append(candidates, want+":latest")
+	}
+	for _, m := range t.Models {
+		for _, c := range candidates {
+			if strings.EqualFold(m.Name, c) || strings.EqualFold(m.Model, c) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Classify asks the local model for a doctype, constrained to a JSON schema.
@@ -143,6 +261,13 @@ func (o *Ollama) Classify(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("ollama: reading response: %w", err)
 	}
+	// A redirect reaches here as a 3xx rather than being followed, because
+	// localOnlyClient returns ErrUseLastResponse. Treat it as the refusal it
+	// is, and say so: a redirecting "local" Ollama is an exfiltration attempt.
+	if isRedirect(resp.StatusCode) {
+		return Result{}, fmt.Errorf("ollama: %s redirected to %q; refusing to resend document text to another host",
+			o.Endpoint, resp.Header.Get("Location"))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return Result{}, fmt.Errorf("ollama: %s: %s", resp.Status, firstLine(strings.TrimSpace(string(payload))))
 	}
@@ -168,6 +293,9 @@ func (o *Ollama) Classify(ctx context.Context, req Request) (Result, error) {
 		Engine:     o.engine(),
 	}, nil
 }
+
+// isRedirect reports whether a status code is a redirect.
+func isRedirect(code int) bool { return code >= 300 && code <= 399 }
 
 // ollamaSystemPrompt keeps the model inside the catalog and stops it inventing
 // doctypes. Validation still assumes it will try.
@@ -250,17 +378,23 @@ func requireLocalhostEndpoint(endpoint string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("ollama: endpoint %q must be http or https", endpoint)
 	}
+	// A literal allowlist, deliberately: resolving a name would let DNS decide
+	// what counts as local. 0.0.0.0 is NOT allowed -- it is a bind address, not
+	// a destination, and Go's proxy bypass does not treat it as loopback, so a
+	// machine with HTTP_PROXY set would route document text through the proxy.
 	switch strings.ToLower(u.Hostname()) {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+	case "localhost", "127.0.0.1", "::1":
 		return nil
 	}
 	return fmt.Errorf("ollama: endpoint %q is not localhost; Kagaz never sends document text off the machine", endpoint)
 }
 
-// httpClient returns the configured client or a sane default.
+// httpClient returns the test-injected client, or the package's redirect- and
+// proxy-refusing client. It never falls back to http.DefaultClient, which would
+// follow redirects and honour proxy environment variables.
 func (o *Ollama) httpClient() *http.Client {
 	if o.client != nil {
 		return o.client
 	}
-	return http.DefaultClient
+	return localOnlyClient
 }

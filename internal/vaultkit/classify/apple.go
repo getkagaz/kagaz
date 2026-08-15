@@ -3,17 +3,11 @@ package classify
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
-
-// probeTimeout bounds the availability check. `kagaz doctor` and the auto
-// selection path must stay fast when the helper is missing or the model is not
-// downloaded.
-const probeTimeout = 3 * time.Second
 
 // classifyTimeout bounds one classification. An on-device model that has not
 // answered in this long is a hang, and a hang must degrade to rules rather than
@@ -23,6 +17,9 @@ const classifyTimeout = 30 * time.Second
 // Apple runs Apple's Foundation Models through kagaz-machelper. It needs no
 // downloaded weights, is the fastest semantic tier, and requires macOS 26 --
 // which is exactly why Available() asks the helper rather than assuming.
+//
+// Apple must not be copied after first use: it caches its probe behind a
+// mutex. Hold it by pointer, as Chain does.
 type Apple struct {
 	// Timeout bounds one classification; zero means classifyTimeout.
 	Timeout time.Duration
@@ -32,12 +29,7 @@ type Apple struct {
 	// locate is a test seam over helper discovery. Nil means ocr.HelperPath.
 	locate func() (string, bool)
 
-	// probeOnce caches the probe for the process lifetime: it costs a process
-	// spawn, and the answer cannot change while kagaz runs. sync.Once makes
-	// concurrent ingest workers safe.
-	probeOnce sync.Once
-	probeOK   bool
-	probeWhy  string
+	probeCache probeCache
 }
 
 // Name identifies the backend. It matches config.EngineApple.
@@ -45,19 +37,22 @@ func (a *Apple) Name() string { return config.EngineApple }
 
 // Available reports whether kagaz-machelper is installed and its Apple
 // Foundation Models backend is usable, by running the helper's fast --probe.
-// The answer is cached for the process lifetime and is race-safe.
+// A decoded answer is cached for the process lifetime; a timeout is not. It is
+// race-safe.
 func (a *Apple) Available() bool {
-	a.probeOnce.Do(a.probe)
-	return a.probeOK
+	ok, _ := a.probeCache.result(a.probe)
+	return ok
 }
 
-// detail explains the backend's state for `kagaz doctor`.
+// detail explains the backend's state for `kagaz doctor`. It reuses the cached
+// probe rather than running a second one.
 func (a *Apple) detail() string {
-	if a.Available() {
+	ok, why := a.probeCache.result(a.probe)
+	if ok {
 		path, _ := a.helperPath()
 		return path
 	}
-	return a.probeWhy
+	return why
 }
 
 // hint names the fix for a forced-but-unavailable apple engine.
@@ -74,25 +69,23 @@ func (a *Apple) helperPath() (string, bool) {
 }
 
 // probe runs `kagaz-machelper classify --backend apple --probe --json` once.
-func (a *Apple) probe() {
+func (a *Apple) probe() (bool, string, bool) {
 	path, ok := a.helperPath()
 	if !ok {
-		a.probeWhy = ocr.HelperBinary + " not found (macOS only; set $" + ocr.HelperPathEnv + " for a local build)"
-		return
+		// Not cached: the user may install the helper while kagaz runs, and
+		// re-checking costs one stat.
+		return false, ocr.HelperBinary + " not found (macOS only; set $" + ocr.HelperPathEnv + " for a local build)", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
 	out, err := a.runner()(ctx, path, []string{"classify", "--backend", config.EngineApple, "--probe", "--json"}, "")
 	if err != nil {
-		a.probeWhy = err.Error()
-		return
+		// A timeout is a cold start until proven otherwise: never cached.
+		return false, err.Error(), !isTimeout(err)
 	}
 	available, reason := decodeProbeResponse(out)
-	a.probeOK = available
-	if !available {
-		a.probeWhy = reason
-	}
+	return available, reason, true
 }
 
 // runner returns the injected runner or the real one.
@@ -109,7 +102,7 @@ func (a *Apple) runner() helperRunner {
 func (a *Apple) Classify(ctx context.Context, req Request) (Result, error) {
 	path, ok := a.helperPath()
 	if !ok {
-		return Result{}, fmt.Errorf("%w: %s", ErrNoHelper, ocr.HelperBinary)
+		return Result{}, fmt.Errorf("%s: %w", ocr.HelperBinary, ocr.ErrNoHelper)
 	}
 
 	timeout := a.Timeout
@@ -129,5 +122,5 @@ func (a *Apple) Classify(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return decodeClassifyResponse(ocr.HelperBinary, config.EngineApple, out)
+	return decodeClassifyResponse(config.EngineApple, out)
 }
