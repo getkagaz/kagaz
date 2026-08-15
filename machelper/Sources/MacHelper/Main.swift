@@ -34,7 +34,7 @@ struct Main {
             return
         }
         if first == "--version" {
-            emit(VersionResponse(contract: contractVersion, engine: "machelper", version: helperVersion))
+            emit(VersionResponse(contract: contractVersion, tool: "kagaz-machelper", version: helperVersion))
             return
         }
 
@@ -47,24 +47,40 @@ struct Main {
             // `--probe` is accepted bare (`kagaz-machelper --probe`) as well as
             // after a subcommand; the Go core calls the bare form on every
             // classify to decide which backend to use.
-            let args = try Arguments(argv, optionsTakingValue: Self.valueOptions)
-            guard args.flag("probe") else {
+            guard first.hasPrefix("--") else {
                 printUsage()
                 throw HelperError(.badUsage, "unknown subcommand \(first.debugDescription)")
+            }
+            let args = try Arguments(
+                argv,
+                optionsTakingValue: Self.probeValueOptions,
+                booleanFlags: Self.probeFlags
+            )
+            guard args.flag("probe") else {
+                printUsage()
+                throw HelperError(.badUsage, "expected --probe, ocr or classify")
             }
             try runProbe(args)
         }
     }
 
-    /// Every long option that consumes a value, across all subcommands.
-    private static let valueOptions: Set<String> = [
-        "langs", "dpi", "max-pages", "backend", "doctypes", "max-chars",
-    ]
+    // Option sets are per-subcommand so that a name belonging to another
+    // subcommand is rejected rather than quietly ignored.
+    private static let ocrValueOptions: Set<String> = ["langs", "dpi", "max-pages"]
+    private static let ocrFlags: Set<String> = ["json"]
+    private static let classifyValueOptions: Set<String> = ["backend", "doctypes", "max-chars"]
+    private static let classifyFlags: Set<String> = ["json", "probe"]
+    private static let probeValueOptions: Set<String> = ["backend"]
+    private static let probeFlags: Set<String> = ["json", "probe"]
 
     // MARK: - Subcommands
 
     private static func runOCR(_ argv: [String]) throws {
-        let args = try Arguments(argv, optionsTakingValue: Self.valueOptions)
+        let args = try Arguments(
+            argv,
+            optionsTakingValue: Self.ocrValueOptions,
+            booleanFlags: Self.ocrFlags
+        )
         guard let path = args.positionals.first else {
             throw HelperError(.badUsage, "ocr requires a file path")
         }
@@ -72,7 +88,7 @@ struct Main {
             throw HelperError(.badUsage, "ocr takes exactly one file path")
         }
         let dpi = Double(try args.intValue("dpi", default: Int(VisionOCR.defaultDPI)))
-        let maxPages = try args.intValue("max-pages", default: 0)
+        let maxPages = try args.intValue("max-pages", default: VisionOCR.defaultMaxPages)
         emit(
             try VisionOCR.run(
                 path: path,
@@ -84,7 +100,11 @@ struct Main {
     }
 
     private static func runClassify(_ argv: [String]) async throws {
-        let args = try Arguments(argv, optionsTakingValue: Self.valueOptions)
+        let args = try Arguments(
+            argv,
+            optionsTakingValue: Self.classifyValueOptions,
+            booleanFlags: Self.classifyFlags
+        )
         let backend = args.value("backend", default: "apple")
 
         if args.flag("probe") {
@@ -143,13 +163,15 @@ struct Main {
     kagaz-machelper \(helperVersion) — on-device OCR and classification for Kagaz.
 
     USAGE
-      kagaz-machelper ocr <path> [--langs en-US,hi-IN] [--dpi 200] [--max-pages N] [--json]
+      kagaz-machelper ocr <path> [--langs en-US,hi-IN] [--dpi 200] [--max-pages 200] [--json]
       kagaz-machelper classify --backend apple --doctypes "invoice:financial,..." [--max-chars N] [--json]
       kagaz-machelper --probe [--backend apple]
       kagaz-machelper --version
 
     NOTES
       classify reads the document text from stdin.
+      ocr streams one page at a time; --max-pages caps the run (0 means no cap) and a
+      capped run reports "truncated": true alongside "pages" and "total_pages".
       Output is always a single JSON object on stdout; --json is accepted for symmetry.
       Errors are JSON too: {"contract":1,"error":"<code>","message":"..."} with exit 1
       (exit 2 for usage errors).
@@ -161,8 +183,12 @@ struct Main {
 let helperVersion = "1.0.0"
 
 /// `--version` payload.
+///
+/// The key is `tool`, not `engine`: `engine` means the inference backend
+/// (`vision` / `apple` / `mlx`) everywhere else in the contract, and
+/// overloading it with a binary name would make it undecodable.
 struct VersionResponse: Encodable {
     let contract: Int
-    let engine: String
+    let tool: String
     let version: String
 }

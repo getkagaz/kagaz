@@ -77,11 +77,29 @@ struct OCRBlock: Encodable {
 }
 
 /// `ocr` success payload.
+///
+/// `pages`, `totalPages` and `truncated` are additive to the original contract
+/// (a decoder that ignores unknown fields is unaffected). They exist so a page
+/// ceiling is never silent: when `truncated` is true the document has text the
+/// helper did not look at, and the Go core must not treat the result as a
+/// complete read of the document.
 struct OCRResponse: Encodable {
     let contract: Int
     let engine: String
     let confidence: Double
+    /// Pages actually recognised.
+    let pages: Int
+    /// Pages the document contains.
+    let totalPages: Int
+    /// True when `pages < totalPages` because `--max-pages` capped the run.
+    let truncated: Bool
     let blocks: [OCRBlock]
+
+    enum CodingKeys: String, CodingKey {
+        case contract, engine, confidence, pages
+        case totalPages = "total_pages"
+        case truncated, blocks
+    }
 }
 
 /// `classify` success payload.

@@ -137,6 +137,13 @@ enum MLXClassifier {
     }
 
     private static func stringify(_ value: Any) -> String? {
+        // JSONSerialization returns NSNumber for both numbers and booleans, and
+        // `as? Int` succeeds on a boolean NSNumber — so without this check
+        // first, `false` stringifies as "0" and lands in the vault as a fact
+        // that says the opposite of nothing. Identity-check CFBoolean instead.
+        if CFGetTypeID(value as AnyObject) == CFBooleanGetTypeID() {
+            return (value as? Bool) == true ? "true" : "false"
+        }
         switch value {
         case let text as String:
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -145,8 +152,6 @@ enum MLXClassifier {
             return String(number)
         case let number as Double:
             return number == number.rounded() ? String(Int(number)) : String(number)
-        case let flag as Bool:
-            return flag ? "true" : "false"
         default:
             return nil
         }

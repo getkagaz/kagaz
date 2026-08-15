@@ -16,13 +16,34 @@ swift build -c release
 
 The binary lands at `.build/release/kagaz-machelper-mlx`.
 
-**Toolchain.** Builds with either the Command Line Tools toolchain or full Xcode. If your
-`xcode-select -p` points at CommandLineTools and you want Xcode's toolchain anyway, prefix
-the command rather than switching the global setting:
+**Toolchain.** No macro plugin is used, so nothing here *requires* Xcode. But unlike
+`machelper`, this package compiles MLX's bundled **C++** sources, which need a complete
+libc++ header set. A CommandLineTools installation with an incomplete
+`/Library/Developer/CommandLineTools/usr/include/c++/v1` fails with
+`fatal error: 'cstdlib' file not found` — a broken CLT install rather than a code problem.
+Check it with:
+
+```sh
+printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
+```
+
+If that fails, either reinstall the Command Line Tools
+(`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`) or build with
+Xcode's toolchain:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -c release
 ```
+
+## Tests
+
+```sh
+swift test
+```
+
+Covers the pure parsing and validation half of the classifier — JSON extraction from model
+prose, confidence rescaling, field coercion, catalog validation and model-path rejection.
+It uses `swift-testing` from the toolchain, so it adds no external dependency.
 
 **Network.** `swift build` resolves packages from GitHub, so the *build* needs network
 access. The **binary** never does — see below.
@@ -59,7 +80,11 @@ kagaz-machelper-mlx --version
 ```
 
 `classify` reads the document text from **stdin**. `--json` is accepted for symmetry;
-output is always JSON.
+output is always JSON. Unknown options are a hard error (`bad_usage`, exit 2).
+
+`--model` takes a Hugging Face repo id (`org/name`) and nothing else: absolute paths and
+components that are empty, `.` or `..` are rejected, so the resolved directory can never
+escape the model cache.
 
 ```json
 { "contract": 1, "engine": "mlx", "doctype": "invoice", "category": "financial",

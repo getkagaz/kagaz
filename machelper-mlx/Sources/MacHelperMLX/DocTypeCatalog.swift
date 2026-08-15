@@ -21,7 +21,10 @@ struct DocTypeCatalog {
         for entry in spec.split(separator: ",") {
             let trimmed = entry.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
-            let parts = trimmed.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            // Exactly one colon. `maxSplits: 1` would happily turn "a:b:c" into
+            // the category "b:c"; a contract parser that quietly accepts
+            // malformed input is how a contract rots.
+            let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
             guard parts.count == 2 else {
                 throw HelperError(.invalidDoctypes, "doctype entry \(trimmed.debugDescription) is not \"name:category\"")
             }

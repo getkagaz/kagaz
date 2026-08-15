@@ -22,10 +22,25 @@ enum ModelCache {
 
     /// The directory for a Hugging Face repo id, e.g.
     /// `~/Library/Application Support/kagaz/models/mlx-community/Qwen2.5-3B-Instruct-4bit`.
-    static func directory(for repo: String) -> URL {
+    ///
+    /// Throws on anything that would resolve outside the cache. Access here is
+    /// read-only and the repo id comes from the user's own config, so the
+    /// practical risk is small — but this binary is a security boundary, and a
+    /// path builder that accepts `..` is not one worth defending later.
+    static func directory(for repo: String) throws -> URL {
+        let components = repo.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.isEmpty, !repo.hasPrefix("/") else {
+            throw HelperError(.badUsage, "--model must be a Hugging Face repo id like org/name, not a path")
+        }
         var url = root
-        for component in repo.split(separator: "/") {
-            url.appendPathComponent(String(component), isDirectory: true)
+        for component in components {
+            guard !component.isEmpty, component != ".", component != ".." else {
+                throw HelperError(
+                    .badUsage,
+                    "--model \(repo.debugDescription) is not a valid repo id: components must not be empty, \".\" or \"..\""
+                )
+            }
+            url.appendPathComponent(component, isDirectory: true)
         }
         return url
     }
@@ -37,7 +52,7 @@ enum ModelCache {
     /// `model_not_found` rather than being handed to MLX, because MLX's own
     /// error for that case is opaque.
     static func resolve(repo: String) throws -> URL {
-        let directory = directory(for: repo)
+        let directory = try directory(for: repo)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {

@@ -11,15 +11,24 @@ import Foundation
 ///     <positional>        anything not starting with "--"
 ///
 /// A bare `--` ends option parsing; everything after it is positional.
+///
+/// Unknown options are a hard error. Silently swallowing `--model foo` as a
+/// boolean flag plus a stray positional is exactly how a caller ends up
+/// believing it selected a model that was never read.
 struct Arguments {
     private(set) var positionals: [String] = []
     private var values: [String: String] = [:]
     private var flags: Set<String> = []
 
-    /// Parses `argv` (excluding the executable path). `optionsTakingValue`
-    /// lists the long names that consume the following argument when they are
-    /// not written in `--key=value` form; anything else is a boolean flag.
-    init(_ argv: [String], optionsTakingValue: Set<String>) throws {
+    /// Parses `argv` (excluding the executable path).
+    ///
+    /// - Parameters:
+    ///   - optionsTakingValue: long names that consume the following argument
+    ///     when not written in `--key=value` form.
+    ///   - booleanFlags: long names accepted as valueless flags.
+    ///
+    /// Anything else beginning with `--` throws `.badUsage`.
+    init(_ argv: [String], optionsTakingValue: Set<String>, booleanFlags: Set<String>) throws {
         var index = 0
         var optionsEnded = false
         while index < argv.count {
@@ -47,7 +56,12 @@ struct Arguments {
                 let name = String(body[body.startIndex..<eq])
                 let value = String(body[body.index(after: eq)...])
                 guard optionsTakingValue.contains(name) else {
-                    throw HelperError(.badUsage, "option --\(name) does not take a value")
+                    throw HelperError(
+                        .badUsage,
+                        booleanFlags.contains(name)
+                            ? "option --\(name) does not take a value"
+                            : "unknown option --\(name)"
+                    )
                 }
                 values[name] = value
                 continue
@@ -59,6 +73,9 @@ struct Arguments {
                 values[body] = argv[index]
                 index += 1
                 continue
+            }
+            guard booleanFlags.contains(body) else {
+                throw HelperError(.badUsage, "unknown option --\(body)")
             }
             flags.insert(body)
         }
@@ -97,6 +114,4 @@ struct Arguments {
             .filter { !$0.isEmpty }
     }
 
-    /// Every boolean flag seen, for rejecting typos.
-    var seenFlags: Set<String> { flags }
 }

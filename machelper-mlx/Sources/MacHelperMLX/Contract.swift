@@ -82,9 +82,13 @@ struct ErrorResponse: Encodable {
 }
 
 /// `--version` payload.
+///
+/// The key is `tool`, not `engine`: `engine` means the inference backend
+/// (`vision` / `apple` / `mlx`) everywhere else in the contract, and
+/// overloading it with a binary name would make it undecodable.
 struct VersionResponse: Encodable {
     let contract: Int
-    let engine: String
+    let tool: String
     let version: String
 }
 

@@ -37,7 +37,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -c release
 ## Commands
 
 ```sh
-kagaz-machelper ocr <path> [--langs en-US,hi-IN] [--dpi 200] [--max-pages N] [--json]
+kagaz-machelper ocr <path> [--langs en-US,hi-IN] [--dpi 200] [--max-pages 200] [--json]
 kagaz-machelper classify --backend apple --doctypes "invoice:financial,..." [--max-chars N] [--json]
 kagaz-machelper --probe [--backend apple]
 kagaz-machelper --version
@@ -45,6 +45,12 @@ kagaz-machelper --version
 
 `--json` is accepted for symmetry with the Go CLI; output is always JSON regardless.
 `classify` reads the document text from **stdin**.
+
+Unknown options are a **hard error** (`bad_usage`, exit 2), including an option that belongs
+to a different subcommand. Silently swallowing `--model foo` as a flag plus a stray
+positional is how a caller ends up believing it selected something that was never read.
+Note that `kagaz-machelper` has no `--model`: Foundation Models exposes exactly one system
+model. Model selection belongs to `kagaz-machelper-mlx`.
 
 ### `ocr`
 
@@ -55,6 +61,7 @@ handed to Vision directly; PDFs are rasterised page by page with Core Graphics f
 
 ```json
 { "contract": 1, "engine": "vision", "confidence": 0.94,
+  "pages": 3, "total_pages": 49, "truncated": true,
   "blocks": [ { "text": "...", "bbox": [0.045, 0.068, 0.412, 0.056], "confidence": 0.97, "page": 1 } ] }
 ```
 
@@ -65,7 +72,21 @@ handed to Vision directly; PDFs are rasterised page by page with Core Graphics f
 - `confidence` at the top level is the length-weighted mean of the block confidences, so a
   well-read paragraph is not dragged down by a doubtful two-character stamp.
 - `--dpi` controls PDF rasterisation only (default 200). The long edge is clamped to 8000px.
-- `--max-pages 0` (the default) means every page.
+- `pages` is how many pages were recognised, `total_pages` how many the document has, and
+  `truncated` is true when `--max-pages` capped the run. **A capped run must not be treated
+  as a complete read** — the text the caller wanted may be on a page that was never looked
+  at, and a silent ceiling is indistinguishable from a document that simply lacks the fact.
+
+### Memory
+
+Pages are **streamed**: render one, recognise it, drop the bitmap, move on. A rasterised
+page costs roughly 18 MB at 200 dpi, so holding a whole document would be linear in page
+count — the batch version of this code peaked at **882 MB RSS** on a 49-page PDF and would
+have reached several gigabytes on a book-length scan. Streaming holds one page at a time:
+the same document now peaks at **165 MB** with byte-identical output.
+
+`--max-pages` defaults to **200** as a belt-and-braces bound on runtime rather than memory;
+`--max-pages 0` means no limit.
 
 ### `classify`
 

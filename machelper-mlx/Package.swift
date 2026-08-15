@@ -31,6 +31,18 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v5)
             ]
-        )
+        ),
+        // swift-testing ships with the toolchain, so this adds no external
+        // dependency. It covers the pure parsing/validation half of the
+        // classifier, which is the part that never runs during an MLX
+        // generation and would otherwise be entirely unexercised.
+        .testTarget(
+            name: "MacHelperMLXTests",
+            dependencies: ["MacHelperMLX"],
+            path: "Tests/MacHelperMLXTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
     ]
 )

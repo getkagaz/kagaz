@@ -26,9 +26,12 @@ struct Main {
         }
     }
 
-    private static let valueOptions: Set<String> = [
-        "backend", "doctypes", "model", "max-chars",
-    ]
+    // Option sets are per-subcommand so that an unknown name is rejected
+    // rather than quietly swallowed as a flag plus a stray positional.
+    private static let classifyValueOptions: Set<String> = ["backend", "doctypes", "model", "max-chars"]
+    private static let classifyFlags: Set<String> = ["json", "probe"]
+    private static let probeValueOptions: Set<String> = ["backend", "model"]
+    private static let probeFlags: Set<String> = ["json", "probe"]
 
     private static func dispatch(_ argv: [String]) async throws {
         guard let first = argv.first else {
@@ -40,7 +43,7 @@ struct Main {
             return
         }
         if first == "--version" {
-            emit(VersionResponse(contract: contractVersion, engine: "machelper-mlx", version: helperVersion))
+            emit(VersionResponse(contract: contractVersion, tool: "kagaz-machelper-mlx", version: helperVersion))
             return
         }
 
@@ -48,17 +51,29 @@ struct Main {
         case "classify":
             try await runClassify(Array(argv.dropFirst()))
         default:
-            let args = try Arguments(argv, optionsTakingValue: Self.valueOptions)
-            guard args.flag("probe") else {
+            guard first.hasPrefix("--") else {
                 printUsage()
                 throw HelperError(.badUsage, "unknown subcommand \(first.debugDescription)")
+            }
+            let args = try Arguments(
+                argv,
+                optionsTakingValue: Self.probeValueOptions,
+                booleanFlags: Self.probeFlags
+            )
+            guard args.flag("probe") else {
+                printUsage()
+                throw HelperError(.badUsage, "expected --probe or classify")
             }
             try runProbe(args)
         }
     }
 
     private static func runClassify(_ argv: [String]) async throws {
-        let args = try Arguments(argv, optionsTakingValue: Self.valueOptions)
+        let args = try Arguments(
+            argv,
+            optionsTakingValue: Self.classifyValueOptions,
+            booleanFlags: Self.classifyFlags
+        )
         if args.flag("probe") {
             try runProbe(args)
             return
@@ -78,7 +93,12 @@ struct Main {
 
     private static func runProbe(_ args: Arguments) throws {
         try checkBackend(args)
-        emit(MLXClassifier.probe(repo: args.value("model", default: ModelCache.defaultRepo)))
+        let repo = args.value("model", default: ModelCache.defaultRepo)
+        // Validate the repo id before probing so a malformed --model is a
+        // bad_usage error rather than an "unavailable" that looks like a
+        // missing download.
+        _ = try ModelCache.directory(for: repo)
+        emit(MLXClassifier.probe(repo: repo))
     }
 
     private static func checkBackend(_ args: Arguments) throws {

@@ -16,14 +16,25 @@ enum VisionOCR {
     /// business documents.
     static let defaultDPI = 200.0
 
-    /// Runs recognition over every page of `path`.
+    /// Default page ceiling.
+    ///
+    /// This is a memory guard, not a policy: a rasterised page costs roughly
+    /// 18 MB at 200 dpi, and the pipeline used to hold every page at once —
+    /// a 49-page PDF peaked at 882 MB RSS and a 300-page scan would have
+    /// reached several gigabytes before the OOM killer arrived. Pages are now
+    /// streamed one at a time, so the ceiling exists only to keep a
+    /// pathological input from running for an unbounded time. `--max-pages 0`
+    /// still means "no limit" for callers that want it.
+    static let defaultMaxPages = 200
+
+    /// Runs recognition over the pages of `path`, one page at a time.
     ///
     /// - Parameters:
     ///   - path: image or PDF on disk.
     ///   - languages: BCP-47 tags, e.g. `["en-US", "hi-IN"]`. Empty means
     ///     Vision's own default ordering.
     ///   - dpi: PDF rasterisation density; ignored for images.
-    ///   - maxPages: 0 means every page.
+    ///   - maxPages: page ceiling; 0 means every page.
     static func run(path: String, languages: [String], dpi: Double, maxPages: Int) throws -> OCRResponse {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -32,16 +43,29 @@ enum VisionOCR {
         guard FileManager.default.isReadableFile(atPath: url.path) else {
             throw HelperError(.fileNotFound, "file is not readable: \(url.path)")
         }
-
-        let images = try rasterise(url: url, dpi: dpi, maxPages: maxPages)
-        guard !images.isEmpty else {
-            throw HelperError(.unsupportedFormat, "could not decode \(url.lastPathComponent) as an image or a PDF")
+        guard maxPages >= 0 else {
+            throw HelperError(.badUsage, "--max-pages cannot be negative")
         }
 
+        let source = try PageSource(url: url, dpi: dpi)
+        let total = source.pageCount
+        guard total > 0 else {
+            throw HelperError(.unsupportedFormat, "\(url.lastPathComponent) contains no pages")
+        }
+        let limit = maxPages > 0 ? min(maxPages, total) : total
+
+        // The whole point of this loop: render one page, recognise it, drop the
+        // bitmap, move on. Peak memory is one page, not the document. The
+        // autorelease pool matters because ImageIO and Vision both hand back
+        // autoreleased objects that would otherwise pile up until exit.
         var blocks: [OCRBlock] = []
-        for (offset, image) in images.enumerated() {
-            blocks.append(contentsOf: try recognise(image: image, page: offset + 1, languages: languages))
+        for number in 1...limit {
+            try autoreleasepool {
+                let image = try source.image(at: number)
+                blocks.append(contentsOf: try recognise(image: image, page: number, languages: languages))
+            }
         }
+
         guard !blocks.isEmpty else {
             throw HelperError(.noText, "no text recognised in \(url.lastPathComponent)")
         }
@@ -50,6 +74,12 @@ enum VisionOCR {
             contract: contractVersion,
             engine: "vision",
             confidence: overallConfidence(blocks),
+            // A hit ceiling must be visible to the Go core, never silent: it is
+            // the difference between "this document has no total" and "we never
+            // looked at the page the total was on".
+            pages: limit,
+            totalPages: total,
+            truncated: limit < total,
             blocks: blocks
         )
     }
@@ -116,11 +146,60 @@ enum VisionOCR {
 
     // MARK: - Rasterisation
 
-    private static func rasterise(url: URL, dpi: Double, maxPages: Int) throws -> [CGImage] {
-        if isPDF(url) {
-            return try renderPDF(url: url, dpi: dpi, maxPages: maxPages)
+    /// A lazy page provider.
+    ///
+    /// It holds only the decoder — a `CGImageSource` or a `CGPDFDocument`, both
+    /// of which keep the file mapped rather than decoded — and materialises one
+    /// bitmap per `image(at:)` call. Nothing here ever accumulates pages; that
+    /// is the whole reason this type exists instead of a `[CGImage]`.
+    struct PageSource {
+        private enum Backing {
+            case image(CGImageSource)
+            case pdf(CGPDFDocument)
         }
-        return try loadImages(url: url, maxPages: maxPages)
+
+        private let backing: Backing
+        private let name: String
+        private let scale: Double
+
+        /// Number of pages (PDF) or frames (image) available.
+        let pageCount: Int
+
+        init(url: URL, dpi: Double) throws {
+            self.name = url.lastPathComponent
+            self.scale = max(dpi, 36.0) / 72.0
+
+            if VisionOCR.isPDF(url) {
+                guard let document = CGPDFDocument(url as CFURL) else {
+                    throw HelperError(.unsupportedFormat, "could not open \(name) as a PDF")
+                }
+                self.backing = .pdf(document)
+                self.pageCount = document.numberOfPages
+            } else {
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                    throw HelperError(.unsupportedFormat, "could not open \(name) as an image or a PDF")
+                }
+                self.backing = .image(source)
+                self.pageCount = CGImageSourceGetCount(source)
+            }
+        }
+
+        /// Renders page `number` (1-based). The caller is expected to drop the
+        /// result before asking for the next one.
+        func image(at number: Int) throws -> CGImage {
+            switch backing {
+            case .image(let source):
+                guard let image = CGImageSourceCreateImageAtIndex(source, number - 1, nil) else {
+                    throw HelperError(.renderFailed, "could not decode frame \(number) of \(name)")
+                }
+                return image
+            case .pdf(let document):
+                guard let page = document.page(at: number) else {
+                    throw HelperError(.renderFailed, "missing page \(number) in \(name)")
+                }
+                return try VisionOCR.render(page: page, number: number, scale: scale)
+            }
+        }
     }
 
     private static func isPDF(_ url: URL) -> Bool {
@@ -131,47 +210,7 @@ enum VisionOCR {
         return magic == Data("%PDF-".utf8)
     }
 
-    private static func loadImages(url: URL, maxPages: Int) throws -> [CGImage] {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            throw HelperError(.unsupportedFormat, "could not open \(url.lastPathComponent) as an image")
-        }
-        let count = CGImageSourceGetCount(source)
-        guard count > 0 else {
-            throw HelperError(.unsupportedFormat, "\(url.lastPathComponent) contains no image frames")
-        }
-        let limit = maxPages > 0 ? min(maxPages, count) : count
-        var images: [CGImage] = []
-        for index in 0..<limit {
-            guard let image = CGImageSourceCreateImageAtIndex(source, index, nil) else {
-                throw HelperError(.renderFailed, "could not decode frame \(index + 1) of \(url.lastPathComponent)")
-            }
-            images.append(image)
-        }
-        return images
-    }
-
-    private static func renderPDF(url: URL, dpi: Double, maxPages: Int) throws -> [CGImage] {
-        guard let document = CGPDFDocument(url as CFURL) else {
-            throw HelperError(.unsupportedFormat, "could not open \(url.lastPathComponent) as a PDF")
-        }
-        let pageCount = document.numberOfPages
-        guard pageCount > 0 else {
-            throw HelperError(.unsupportedFormat, "\(url.lastPathComponent) has no pages")
-        }
-        let limit = maxPages > 0 ? min(maxPages, pageCount) : pageCount
-        let scale = max(dpi, 36.0) / 72.0
-
-        var images: [CGImage] = []
-        for number in 1...limit {
-            guard let page = document.page(at: number) else {
-                throw HelperError(.renderFailed, "missing page \(number) in \(url.lastPathComponent)")
-            }
-            images.append(try render(page: page, number: number, scale: scale))
-        }
-        return images
-    }
-
-    private static func render(page: CGPDFPage, number: Int, scale: Double) throws -> CGImage {
+    fileprivate static func render(page: CGPDFPage, number: Int, scale: Double) throws -> CGImage {
         let cropped = page.getBoxRect(.cropBox)
         let usesCropBox = !cropped.isEmpty
         let box = usesCropBox ? cropped : page.getBoxRect(.mediaBox)
