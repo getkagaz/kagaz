@@ -119,8 +119,30 @@ type Classify struct {
 
 // Encrypted controls handling of password-protected documents.
 type Encrypted struct {
-	KeepEncrypted bool   `yaml:"keep_encrypted"`
+	// KeepEncrypted is a tri-state: nil means the key was absent from
+	// vault.yaml, which is distinct from an explicit false. The safe default
+	// is true -- Kagaz must never be the reason a document loses its
+	// encryption -- but "leave it encrypted" is also a setting a user can
+	// legitimately turn off, and a plain bool cannot represent both. With a
+	// plain bool, defaulting the zero value to true would silently overwrite
+	// an explicit `keep_encrypted: false` (as written in examples/vault.yaml
+	// and the fixture vault) and defaulting it to false would fail open on an
+	// omitted key. Use KeepEncryptedDocs to read the effective value; do not
+	// read this field directly.
+	KeepEncrypted *bool  `yaml:"keep_encrypted"`
 	PasswordStore string `yaml:"password_store"`
+}
+
+// KeepEncryptedDocs reports the effective value of
+// encrypted_docs.keep_encrypted: true when the key was absent from vault.yaml
+// (fail safe -- an omitted key must never mean "strip the encryption"), or the
+// explicit value otherwise. This is the only supported way to read the
+// setting.
+func (e *Encrypted) KeepEncryptedDocs() bool {
+	if e.KeepEncrypted == nil {
+		return true
+	}
+	return *e.KeepEncrypted
 }
 
 // Lint enables individual convention checks.
@@ -358,6 +380,11 @@ func (c *Config) applyDefaults() {
 	if c.Encrypted.PasswordStore == "" {
 		c.Encrypted.PasswordStore = "keychain"
 	}
+	// No default is set here for KeepEncrypted, for the same reason as
+	// RequireConfirmationOnResolveForSend below: it stays nil when vault.yaml
+	// omits the key, and the fail-safe "nil means true" logic lives in
+	// Encrypted.KeepEncryptedDocs so that an explicit `false` survives
+	// defaulting instead of being silently overwritten.
 	if c.Confidence.AuditLog == "" {
 		c.Confidence.AuditLog = "vault.log"
 	}
@@ -495,6 +522,12 @@ func (c *Config) Validate() error {
 
 // requireLocalhost enforces safety invariant #1 at config-parse time: a remote
 // inference endpoint can never be configured, let alone dialled.
+//
+// 0.0.0.0 is deliberately not accepted. It is a bind address ("listen on every
+// interface"), not a destination, and both Ollama call sites reject it again at
+// request time — so accepting it here would let a user save a vault.yaml that
+// validates cleanly and then fails at the first classification, which teaches
+// them about the mistake at the worst possible moment.
 func requireLocalhost(endpoint string) error {
 	if endpoint == "" {
 		return nil
@@ -514,8 +547,11 @@ func requireLocalhost(endpoint string) error {
 	}
 	host = strings.Trim(host, "[]")
 	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+	case "localhost", "127.0.0.1", "::1":
 		return nil
+	}
+	if strings.ToLower(host) == "0.0.0.0" {
+		return fmt.Errorf("%q is a bind address, not a destination; use http://localhost:11434 (or 127.0.0.1)", endpoint)
 	}
 	return fmt.Errorf("%q is not localhost; Kagaz never sends document text off the machine", endpoint)
 }
