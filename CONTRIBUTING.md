@@ -28,27 +28,48 @@ it.
 
 ### Swift and Xcode
 
-Swift packages (`machelper/`, `machelper-mlx/`) need macOS and (for
-`machelper`'s Apple Foundation Models path) full Xcode, not just Command
-Line Tools — the `@Generable` macro plugin used for guided generation ships
-only inside Xcode. (`app/`, the planned SwiftUI menu-bar app, is an empty
-placeholder directory as of this writing — nothing to build there yet.)
+Swift packages need macOS, but the two packages have **different toolchain
+requirements** — don't assume they're the same:
 
-```
-cd machelper && swift build
-```
+- **`machelper/`** needs only **Xcode's Command Line Tools**, not full
+  Xcode. Its `classify --backend apple` path builds guided generation's
+  schema at run time with `DynamicGenerationSchema`, not the `@Generable`
+  macro — the doctype catalog it constrains against is only known at run
+  time (a vault can extend it via `vault.yaml`), and a macro's schema is
+  fixed at compile time, so `@Generable` was never a usable choice here
+  regardless of toolchain. It follows that the macro plugin — the one thing
+  that needs full Xcode — is never invoked. Verified directly: a clean
+  `swift build --package-path machelper -c release` succeeds under a
+  Command Line Tools-only `xcode-select -p`. See `machelper/README.md`'s
+  "Why not `@Generable`" for the full reasoning.
 
-If `xcode-select -p` points at Command Line Tools rather than a full Xcode
-install (common if you installed Xcode after CLT, or use CLT day-to-day for
-other work), point this one build at Xcode explicitly instead of changing
-your global `xcode-select`:
+  ```
+  cd machelper && swift build
+  ```
 
-```
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
-```
+- **`machelper-mlx/`** needs a **working C++ toolchain** — not "Xcode"
+  specifically, but MLX's bundled C++ sources need a complete `libc++`
+  header set, which a Command Line Tools install can be missing (fails with
+  `fatal error: 'cstdlib' file not found`). Check yours before building:
 
-The same applies to `swift test`, `swift build -c release`, and to
-`machelper-mlx/`'s own build.
+  ```
+  printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
+  ```
+
+  If that fails, either reinstall Command Line Tools
+  (`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`)
+  or build against a full Xcode install's toolchain instead:
+
+  ```
+  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+  ```
+
+  `DEVELOPER_DIR` is not needed for `machelper/` — only reach for it if your
+  Command Line Tools install turns out to be broken, or you're building
+  `machelper-mlx/` and prefer Xcode's toolchain over fixing CLT.
+
+(`app/`, the planned SwiftUI menu-bar app, is an empty placeholder directory
+as of this writing — nothing to build there yet.)
 
 ## Package layout
 

@@ -43,8 +43,8 @@ positional argument is accepted.
 | Flag | Meaning |
 |---|---|
 | `--langs` | Comma-separated Vision language hints, e.g. `en-US,hi-IN`. |
-| `--dpi` | Rasterisation resolution for PDF pages before OCR. Defaults to `VisionOCR.defaultDPI`. |
-| `--max-pages` | Caps how many PDF pages are rendered and OCR'd. `0` (the default) means no cap. |
+| `--dpi` | Rasterisation resolution for PDF pages before OCR. Defaults to 200; the long edge is clamped to 8000px regardless. |
+| `--max-pages` | Caps how many PDF pages are rendered and OCR'd. **Defaults to 200** (a belt-and-braces bound on runtime, not on memory — pages are streamed one at a time, so memory use doesn't grow with page count). `--max-pages 0` means no limit. |
 | `--json` | Accepted for symmetry/scriptability; output is always a single JSON object regardless. |
 
 ### Success shape
@@ -54,6 +54,9 @@ positional argument is accepted.
   "contract": 1,
   "engine": "vision",
   "confidence": 0.94,
+  "pages": 3,
+  "total_pages": 49,
+  "truncated": true,
   "blocks": [
     {
       "text": "Invoice Number: INV-2026-0417",
@@ -86,6 +89,19 @@ positional argument is accepted.
   the helper before emission, so no caller needs to flip it again.
 - `page` is 1-indexed. `Result.Pages` on the Go side is the highest `page`
   value seen across all blocks.
+- `pages` is how many pages were actually recognised in this run.
+  `total_pages` is how many pages the source document has, regardless of
+  whether `--max-pages` capped the run short of it. `truncated` is `true`
+  exactly when `--max-pages` cut the run off before `total_pages` was
+  reached (`pages < total_pages`).
+- **A `truncated: true` response must not be treated as a complete document
+  read.** The fact a caller wanted may be on a page that was never looked
+  at, and there is no way to distinguish "the document doesn't contain that
+  fact" from "the run stopped before reaching the page that does" once
+  truncation has happened — a consumer that cares (`kagaz ingest`, in
+  particular) needs to either raise `--max-pages`, or treat a truncated
+  extraction as lower-confidence than a complete one, not as equivalent to
+  it.
 
 ### Error shape
 
@@ -206,8 +222,14 @@ stdin, used by `classify.Available()` and cached for the process lifetime.
 Always exits `0` when the probe itself ran; `available` carries the answer:
 
 ```json
-{ "contract": 1, "engine": "apple", "available": true, "reason": null }
+{ "contract": 1, "engine": "apple", "available": true }
 ```
+
+(`reason` is `String?` in Swift and the compiler-synthesized `Encodable`
+conformance uses `encodeIfPresent` for it, so a `nil` reason is **omitted
+from the JSON entirely**, not written as `"reason": null` — a Go caller
+should treat a missing `reason` key the same as an empty string, not
+attempt to distinguish the two.)
 
 or
 
@@ -229,8 +251,18 @@ kagaz-machelper --version
 ```
 
 ```json
-{ "contract": 1, "engine": "machelper", "version": "1.0.0" }
+{ "contract": 1, "tool": "kagaz-machelper", "version": "1.0.0" }
 ```
+
+(`kagaz-machelper-mlx --version` reports `"tool": "kagaz-machelper-mlx"`,
+confirmed against `Formula/kagaz-mlx.rb`'s own `test do` block, which
+asserts exactly this.)
+
+The field is **`tool`**, not `engine` — `engine` is reserved elsewhere in
+this contract for `vision`/`apple`/`mlx`, the backend that produced a
+result, which has no meaning for `--version`; `tool` instead names which
+binary answered, since both `kagaz-machelper` and `kagaz-machelper-mlx`
+implement this flag. Do not confuse the two fields.
 
 `version` is the helper binary's own release version, independent of and
 not to be confused with `contract`.

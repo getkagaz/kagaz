@@ -57,13 +57,15 @@ This installs the `kagaz` CLI, the `kagaz-mcp` MCP server, and the
 
 **No release has been tagged yet, so there are no prebuilt bottles yet.**
 Until the first tagged release, the command above builds everything from
-source, which needs **full Xcode** (not just Command Line Tools — the Apple
-Foundation Models classifier needs Xcode's `@Generable` macro plugin) and
-**Go** as build-time dependencies; Homebrew installs Go for you, but Xcode
-you need to install yourself first. Once bottles are published, the same
-command will need neither — see
+source, which needs **Xcode's Command Line Tools** (full Xcode is not
+required — the Apple Foundation Models classifier builds its schema at run
+time with `DynamicGenerationSchema`, not the `@Generable` macro that needs
+full Xcode) and **Go** as build-time dependencies; Homebrew installs Go for
+you automatically, and most Macs already have Command Line Tools. Once
+bottles are published, the same command will need neither — see
 [docs/installation.md](docs/installation.md) for the full breakdown, the
-optional MLX tier, the menu-bar app, and building from source directly.
+optional MLX tier (which does need a working C++ toolchain), the menu-bar
+app, and building from source directly.
 
 ## Quickstart
 
@@ -152,23 +154,21 @@ Ollama are opt-in for people who want them.
 
 No — see Privacy invariants above.
 
-**Why does `brew install kagaz` need Xcode at all — why not split Apple
-Foundation Models into a separate opt-in formula, the way `kagaz-mlx` is
-split out?**
+**Does `brew install kagaz` need Xcode?**
 
-Because it's the wrong trade for the base formula's actual users. Once
-bottles are published, this dependency is invisible to nearly everyone: a
-bottled install needs no Xcode at all, since the bottle is already built.
-The Xcode requirement only bites people building from source — true today,
-pre-release, but not the steady state. A third formula would be ongoing
-maintenance (another `Formula/*.rb` to keep in sync, another livecheck,
-another thing a user has to know to reach for) to solve a problem that
-mostly disappears once releases exist. `kagaz-mlx` is a different situation:
-it pulls in the entire MLX-Swift stack and, on first use, multi-gigabyte
-model weights — costs a bottled base install would otherwise impose on
-every user regardless of whether they touch the MLX tier. Xcode-as-a-build-
-dependency has no such runtime cost once bottled; MLX's costs don't go away
-just because a bottle exists.
+No. Building `kagaz.rb` from source needs Xcode's Command Line Tools and
+Go — full Xcode is not required, and `Formula/kagaz.rb` declares no
+`depends_on xcode: :build`. The Apple Foundation Models classifier's guided
+generation is built at run time with `DynamicGenerationSchema` rather than
+the `@Generable` macro, because the doctype catalog it's constrained to is
+only known at run time — every vault can extend it via `vault.yaml` — and a
+macro's schema is fixed at compile time, so `@Generable` was never usable
+here regardless of toolchain. The `@Generable` macro plugin was the one
+thing that would have needed full Xcode; `machelper` doesn't use it. The
+separate, opt-in `kagaz-mlx` formula is different: it compiles MLX's
+bundled C++ sources, which need a complete C++ toolchain — Xcode's
+satisfies that, but so can a healthy Command Line Tools install; see
+[docs/installation.md](docs/installation.md) for the check and the fix.
 
 **Is there a menu-bar app?**
 
