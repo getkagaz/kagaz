@@ -1,0 +1,13 @@
+REPUBLIC OF EXAMPLE
+PASSPORT
+
+Type P
+Passport No: X1234567
+Surname: RAO
+Given Names: SAM
+Nationality: Examplian
+Date of Issue: 04 Feb 2019
+Date of Expiry: 03 Feb 2029
+Place of Issue: Capital City
+
+P<EXARAO<<SAM<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
