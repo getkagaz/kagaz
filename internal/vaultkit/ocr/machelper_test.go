@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -104,5 +105,68 @@ func TestRunHelperWithoutHelper(t *testing.T) {
 	withoutHelper(t)
 	if _, err := RunHelper(context.Background()); !errors.Is(err, ErrNoHelper) {
 		t.Fatalf("RunHelper() error = %v, want ErrNoHelper", err)
+	}
+}
+
+// installStubHelper writes a /bin/sh stub with the given body and points
+// $KAGAZ_MACHELPER at it. It stands in for the Swift binary on any platform,
+// so these tests run on Linux CI.
+func installStubHelper(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), HelperBinary)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("writing stub helper: %v", err)
+	}
+	t.Setenv(HelperPathEnv, path)
+}
+
+func TestRunHelperSurfacesStructuredError(t *testing.T) {
+	// The helper writes its failure payload to stdout, not stderr, and exits
+	// non-zero (MacHelper/Contract.swift fail()).
+	const payload = `{"contract":1,"error":"unsupported_format","message":"the file at scan.tif is not a recognizable image or PDF"}`
+	installStubHelper(t, "printf '%s\\n' '"+payload+"'\nexit 1\n")
+
+	out, err := RunHelper(context.Background(), "ocr", "scan.tif", "--json")
+	if err == nil {
+		t.Fatal("RunHelper() succeeded, want an error")
+	}
+	if len(out) == 0 {
+		t.Error("RunHelper() discarded stdout on failure; the payload lives there")
+	}
+
+	var failure *HelperFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("error is %T, want *HelperFailure", err)
+	}
+	if failure.Code != "unsupported_format" {
+		t.Errorf("Code = %q, want %q", failure.Code, "unsupported_format")
+	}
+	if !strings.Contains(err.Error(), "unsupported_format") ||
+		!strings.Contains(err.Error(), "not a recognizable image") {
+		t.Errorf("error = %q, want the contract code and message", err)
+	}
+}
+
+func TestRunHelperFallsBackToStderr(t *testing.T) {
+	installStubHelper(t, "echo 'dyld: library not loaded' >&2\nexit 1\n")
+
+	_, err := RunHelper(context.Background(), "ocr", "scan.tif", "--json")
+	if err == nil {
+		t.Fatal("RunHelper() succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "dyld: library not loaded") {
+		t.Errorf("error = %q, want the stderr line", err)
+	}
+}
+
+func TestRunHelperSuccess(t *testing.T) {
+	installStubHelper(t, "printf '%s\\n' '{\"contract\":1,\"engine\":\"vision\",\"confidence\":0,\"blocks\":[]}'\n")
+
+	out, err := RunHelper(context.Background(), "ocr", "scan.tif", "--json")
+	if err != nil {
+		t.Fatalf("RunHelper() error = %v", err)
+	}
+	if !strings.Contains(string(out), `"engine":"vision"`) {
+		t.Fatalf("stdout = %q, want the helper payload", out)
 	}
 }

@@ -69,9 +69,11 @@ type visionResponse struct {
 
 // visionBlock is one recognised text region.
 //
-// BBox is Vision's normalised rectangle, [x, y, width, height], with the origin
-// at the *bottom* left of the page -- so a larger y is higher up the page. That
-// is why reading order sorts by descending top edge rather than ascending y.
+// BBox is [x, y, width, height] in normalised (0-1) page coordinates with the
+// origin at the **top left**, per docs/machelper-contract.md. Vision's native
+// bottom-left rectangle is flipped inside the helper
+// (MacHelper/VisionOCR.swift topLeftBox), so a smaller y is higher up the page
+// and reading order is ascending y.
 type visionBlock struct {
 	Text       string    `json:"text"`
 	BBox       []float64 `json:"bbox"`
@@ -79,17 +81,13 @@ type visionBlock struct {
 	Page       int       `json:"page"`
 }
 
-// top returns the block's top edge in Vision coordinates (y + height), falling
-// back to 0 for a malformed or absent bbox.
+// top returns the block's top edge, which in top-left coordinates is simply y.
+// A malformed or absent bbox sorts to the top of the page.
 func (b visionBlock) top() float64 {
-	switch len(b.BBox) {
-	case 4:
-		return b.BBox[1] + b.BBox[3]
-	case 2:
+	if len(b.BBox) >= 2 {
 		return b.BBox[1]
-	default:
-		return 0
 	}
+	return 0
 }
 
 // left returns the block's left edge, or 0 for a malformed bbox.
@@ -120,7 +118,7 @@ func parseVisionOutput(data []byte) (Result, error) {
 			return blocks[i].Page < blocks[j].Page
 		}
 		if ti, tj := blocks[i].top(), blocks[j].top(); ti != tj {
-			return ti > tj // higher on the page comes first
+			return ti < tj // smaller y is higher on the page, so it is read first
 		}
 		return blocks[i].left() < blocks[j].left()
 	})

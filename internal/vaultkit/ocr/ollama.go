@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +30,11 @@ const DefaultOllamaPrompt = "Transcribe all of the text in this image exactly as
 // (`:q4_K_M`) are stripped before lookup, and matching is case-insensitive.
 // Teaching Kagaz about another quirky model is one line here.
 var ollamaPrompts = map[string]string{
+	// TODO(spec): this phrase is UNVERIFIED. docs/model-use.md (§6 of the
+	// spec) is the authority for unlimited-ocr's exact trained prompt; the
+	// value below is a reconstruction. Confirm it against the model card /
+	// spec and correct it here -- an incorrect phrase makes the model return
+	// empty output, which looks like a bad scan rather than a wrong prompt.
 	"unlimited-ocr": "Read all the text in the image.",
 }
 
@@ -46,13 +53,48 @@ type Ollama struct {
 	// Enabled is a tri-state: "auto", "true" or "false".
 	Enabled string
 
-	// client is a test seam; nil means a default client is used.
+	// client is a test seam; nil means localOnlyClient is used.
 	client *http.Client
+
+	// probeMu guards the cached Available() result. Ollama therefore must not
+	// be copied after first use; ocr.go holds it by pointer.
+	probeMu  sync.Mutex
+	probedAt time.Time
+	probeOK  bool
+}
+
+// localOnlyClient is the package's HTTP client for the Ollama runner. Two of
+// its settings are load-bearing safety properties, not tuning:
+//
+//   - CheckRedirect refuses to follow redirects. Without it, anything answering
+//     on 127.0.0.1 could reply "307 Location: https://example.com/" and Go
+//     would replay the request body -- the whole base64-encoded document -- to
+//     a remote host, entirely bypassing the localhost check.
+//   - Proxy is nil. Go's default proxy bypass exempts loopback addresses only,
+//     so with HTTP_PROXY set a non-loopback local endpoint would route document
+//     bytes through a proxy that may not be on this machine.
+var localOnlyClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+	Transport: &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 0,
+		MaxIdleConns:          4,
+		IdleConnTimeout:       30 * time.Second,
+	},
 }
 
 // ollamaProbeTimeout bounds the availability check so `kagaz doctor` and the
 // auto-selection path stay fast when nothing is listening.
 const ollamaProbeTimeout = 1500 * time.Millisecond
+
+// ollamaProbeTTL is how long an availability answer is reused. It exists so a
+// single `kagaz doctor` run, which asks Available() and then detail(), probes
+// once rather than twice, while still noticing a server that starts later.
+const ollamaProbeTTL = 5 * time.Second
 
 // ollamaExtractTimeout bounds a generation. Vision models on a laptop are slow;
 // this is generous but finite.
@@ -65,6 +107,9 @@ func (o *Ollama) Name() string { return "ollama" }
 // Available reports whether Ollama is opted in, configured with a localhost
 // endpoint and answering. It is a cheap GET /api/tags with a short timeout and
 // never dials a non-localhost host.
+//
+// The result is cached for ollamaProbeTTL so that `kagaz doctor`, which asks
+// for availability and then for detail, does not pay the timeout twice.
 func (o *Ollama) Available() bool {
 	if o.Enabled == "false" {
 		return false
@@ -76,6 +121,19 @@ func (o *Ollama) Available() bool {
 	if err != nil {
 		return false
 	}
+
+	o.probeMu.Lock()
+	defer o.probeMu.Unlock()
+	if !o.probedAt.IsZero() && time.Since(o.probedAt) < ollamaProbeTTL {
+		return o.probeOK
+	}
+	o.probeOK = o.probe(base)
+	o.probedAt = time.Now()
+	return o.probeOK
+}
+
+// probe performs the actual GET /api/tags. The caller holds probeMu.
+func (o *Ollama) probe(base string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), ollamaProbeTimeout)
 	defer cancel()
 
@@ -240,17 +298,22 @@ func requireLocalhostEndpoint(endpoint string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("ollama: endpoint %q must be http or https", endpoint)
 	}
+	// A literal allowlist, deliberately: resolving a name would let DNS decide
+	// what counts as local. 0.0.0.0 is NOT allowed -- it is a bind address, not
+	// a destination, and Go's proxy bypass does not treat it as loopback.
 	switch strings.ToLower(u.Hostname()) {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+	case "localhost", "127.0.0.1", "::1":
 		return nil
 	}
 	return fmt.Errorf("ollama: endpoint %q is not localhost; Kagaz never sends document text off the machine", endpoint)
 }
 
-// httpClient returns the configured client or a sane default.
+// httpClient returns the test-injected client, or the package's redirect- and
+// proxy-refusing client. It never falls back to http.DefaultClient, which would
+// follow redirects and honour proxy environment variables.
 func (o *Ollama) httpClient() *http.Client {
 	if o.client != nil {
 		return o.client
 	}
-	return http.DefaultClient
+	return localOnlyClient
 }

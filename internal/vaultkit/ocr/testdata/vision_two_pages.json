@@ -3,9 +3,9 @@
   "engine": "vision",
   "confidence": 0.94,
   "blocks": [
-    {"text": "Total due: 1,240.00", "bbox": [0.10, 0.20, 0.40, 0.04], "confidence": 0.91, "page": 1},
-    {"text": "Page 2 continues here", "bbox": [0.10, 0.80, 0.60, 0.05], "confidence": 0.88, "page": 2},
-    {"text": "ACME LTD", "bbox": [0.10, 0.90, 0.30, 0.05], "confidence": 0.99, "page": 1},
-    {"text": "Invoice 2024-117", "bbox": [0.55, 0.90, 0.35, 0.05], "confidence": 0.97, "page": 1}
+    {"text": "Total due: 1,240.00", "bbox": [0.10, 0.76, 0.40, 0.04], "confidence": 0.91, "page": 1},
+    {"text": "Page 2 continues here", "bbox": [0.10, 0.15, 0.60, 0.05], "confidence": 0.88, "page": 2},
+    {"text": "ACME LTD", "bbox": [0.10, 0.05, 0.30, 0.05], "confidence": 0.99, "page": 1},
+    {"text": "Invoice 2024-117", "bbox": [0.55, 0.05, 0.35, 0.05], "confidence": 0.97, "page": 1}
   ]
 }

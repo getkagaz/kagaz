@@ -25,8 +25,10 @@ func TestParseVisionOutputReadingOrder(t *testing.T) {
 		t.Fatalf("parseVisionOutput() error = %v", err)
 	}
 
-	// Page order first, then top-to-bottom within a page (Vision's y axis
-	// points up, so the highest top edge is read first), then left-to-right.
+	// Page order first, then top-to-bottom within a page (the contract's y
+	// axis points down from a top-left origin, so the smallest y is read
+	// first), then left-to-right. The fixture deliberately lists the blocks
+	// out of reading order.
 	want := strings.Join([]string{
 		"ACME LTD",
 		"Invoice 2024-117",
@@ -77,6 +79,24 @@ func TestParseVisionOutputEmptyBlocks(t *testing.T) {
 	}
 	if res.Text != "" || res.Pages != 0 {
 		t.Fatalf("got %+v, want empty text and zero pages", res)
+	}
+}
+
+// TestVisionSurfacesHelperErrorCode proves the diagnosis survives the whole
+// path: helper stdout payload -> RunHelper -> Vision.Extract's caller.
+func TestVisionSurfacesHelperErrorCode(t *testing.T) {
+	installStubHelper(t, `printf '%s\n' '{"contract":1,"error":"no_text","message":"recognition produced no text"}'
+exit 1
+`)
+
+	v := &Vision{Languages: []string{"en-US"}}
+	_, err := v.Extract(context.Background(), "scan.pdf")
+	if err == nil {
+		t.Fatal("Extract() succeeded, want an error")
+	}
+	var failure *HelperFailure
+	if !errors.As(err, &failure) || failure.Code != "no_text" {
+		t.Fatalf("error = %v (%T), want a *HelperFailure with code no_text", err, err)
 	}
 }
 

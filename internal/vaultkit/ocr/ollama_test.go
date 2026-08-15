@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -43,6 +44,10 @@ func TestOllamaRejectsNonLocalhostWithoutDialling(t *testing.T) {
 		{"remote ip", "http://203.0.113.7:11434"},
 		{"credentials disguising the host", "http://localhost@evil.example.com:11434"},
 		{"https remote", "https://ollama.example.com/api"},
+		// 0.0.0.0 is a bind address, not a destination. Go's proxy bypass
+		// exempts loopback only, so with HTTP_PROXY set this would send the
+		// document to the proxy host.
+		{"unspecified bind address", "http://0.0.0.0:11434"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,7 +77,6 @@ func TestOllamaAcceptsLoopbackEndpoints(t *testing.T) {
 		"http://localhost:11434",
 		"http://127.0.0.1:11434",
 		"http://[::1]:11434",
-		"http://0.0.0.0:11434",
 		"http://LocalHost:11434/",
 	} {
 		if err := requireLocalhostEndpoint(endpoint); err != nil {
@@ -204,22 +208,80 @@ func TestOllamaAvailable(t *testing.T) {
 
 	tests := []struct {
 		name string
-		o    Ollama
+		o    *Ollama
 		want bool
 	}{
-		{"running and enabled", Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "true"}, true},
-		{"running and auto", Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "auto"}, true},
-		{"disabled in config", Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "false"}, false},
-		{"no model configured", Ollama{Endpoint: srv.URL, Enabled: "auto"}, false},
-		{"no endpoint configured", Ollama{Model: "unlimited-ocr", Enabled: "auto"}, false},
-		{"server absent", Ollama{Endpoint: deadURL, Model: "unlimited-ocr", Enabled: "auto"}, false},
+		{"running and enabled", &Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "true"}, true},
+		{"running and auto", &Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "auto"}, true},
+		{"disabled in config", &Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "false"}, false},
+		{"no model configured", &Ollama{Endpoint: srv.URL, Enabled: "auto"}, false},
+		{"no endpoint configured", &Ollama{Model: "unlimited-ocr", Enabled: "auto"}, false},
+		{"server absent", &Ollama{Endpoint: deadURL, Model: "unlimited-ocr", Enabled: "auto"}, false},
+		{"unspecified bind address", &Ollama{Endpoint: "http://0.0.0.0:11434", Model: "unlimited-ocr", Enabled: "auto"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			o := tc.o
-			if got := o.Available(); got != tc.want {
-				t.Fatalf("Available() = %v, want %v (detail: %s)", got, tc.want, o.detail())
+			if got := tc.o.Available(); got != tc.want {
+				t.Fatalf("Available() = %v, want %v (detail: %s)", got, tc.want, tc.o.detail())
 			}
 		})
+	}
+}
+
+// TestOllamaDoctorProbesOnce pins the fix for doctor paying the probe timeout
+// twice: Describe() asks Available() and then detail(), and detail() used to
+// probe again.
+func TestOllamaDoctorProbesOnce(t *testing.T) {
+	var probes int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&probes, 1)
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+
+	o := &Ollama{Endpoint: srv.URL, Model: "unlimited-ocr", Enabled: "auto"}
+	if !o.Available() {
+		t.Fatal("Available() = false against a live stub server")
+	}
+	_ = o.detail()
+	if got := atomic.LoadInt32(&probes); got != 1 {
+		t.Fatalf("probed %d times, want 1", got)
+	}
+}
+
+// TestOllamaDoesNotFollowRedirects pins the fix for a redirect escaping the
+// localhost check. A local port could answer 307 with an off-host Location;
+// because the request body is replayable, following it would ship the whole
+// base64-encoded document to that host.
+func TestOllamaDoesNotFollowRedirects(t *testing.T) {
+	path, _ := writeImage(t)
+
+	var offHostHits int32
+	offHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&offHostHits, 1)
+		_, _ = w.Write(readFixture(t, "ollama_trained_prompt.json"))
+	}))
+	defer offHost.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, offHost.URL+"/api/generate", http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	o := &Ollama{Endpoint: redirector.URL, Model: "unlimited-ocr", Enabled: "true"}
+	if _, err := o.Extract(context.Background(), path); err == nil {
+		t.Fatal("Extract() succeeded through a redirect, want an error")
+	}
+	if got := atomic.LoadInt32(&offHostHits); got != 0 {
+		t.Fatalf("the redirect target received %d requests, want 0: the document escaped the localhost check", got)
+	}
+
+	// The same must hold for the availability probe.
+	o2 := &Ollama{Endpoint: redirector.URL, Model: "unlimited-ocr", Enabled: "auto"}
+	if o2.Available() {
+		t.Fatal("Available() = true for a server that only redirects")
+	}
+	if got := atomic.LoadInt32(&offHostHits); got != 0 {
+		t.Fatalf("the redirect target received %d requests, want 0", got)
 	}
 }
