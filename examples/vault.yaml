@@ -1,0 +1,193 @@
+# Example vault.yaml, fully commented.
+#
+# This is a starting point, not a template you must keep intact: every field
+# here has a built-in default (see docs/configuration.md), so a real vault.yaml
+# can be much shorter. `kagaz init` writes a minimal one; this file exists to
+# show every knob in one place, with reasoning, for a global (locale-agnostic)
+# vault.
+#
+# The machine-readable version of this same schema lives at
+# docs/vault.schema.json. If this file and internal/vaultkit/config/config.go
+# ever disagree, the Go source is authoritative.
+
+version: 1
+
+# Root directory of the vault. A leading ~ expands to your home directory. A
+# relative path resolves against the directory holding this vault.yaml, so
+# the vault stays portable if you move it (including in/out of iCloud Drive).
+vault_root: ~/Documents
+
+fiscal_year:
+  # 1 = calendar year (global default). Use 4 for India/Japan/UK-style years,
+  # 7 for Australia, 10 for the US federal fiscal year.
+  start_month: 1
+  # Placeholders: {yyyy1} {yyyy2} full years, {yy1} {yy2} two-digit years.
+  # "FY {yyyy1}" renders "FY 2026"; "FY {yy1}-{yy2}" renders "FY 25-26" for a
+  # split fiscal year (start_month != 1).
+  label_format: "FY {yyyy1}"
+
+# Vault owners. `tag` defaults to a lowercase slug of `name` when omitted
+# (e.g. "Alex Rao" -> "alex-rao") and must be unique across people.
+people:
+  - name: Alex Rao
+    tag: alex-rao
+  - name: Sam Rao
+    tag: sam-rao
+
+owner_groups:
+  # How a document belonging to more than one person is addressed.
+  separator_folder: "+"      # folder name for shared docs: "Alex+Sam"
+  separator_filename: "-"    # filename field for shared docs: "Alex-Sam"
+  order: alphabetical        # only "alphabetical" changes ordering today
+
+filename:
+  # {DocType} is mandatory. Required fields must precede optional ([...])
+  # ones. Recognised fields: {DocType} {Names} {Identifier} {Year} {Modifier}.
+  pattern: "{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]"
+  # word_separator joins words *within* a field: "Boarding-Pass".
+  word_separator: "-"
+  # field_separator joins fields: "Invoice_Alex-Rao_Acme-Corp_2026".
+  # Must differ from word_separator.
+  field_separator: "_"
+
+# Maps doctype categories onto folders beneath vault_root. This is the
+# global-first default set (config.DefaultStructure) written out explicitly
+# so every option is visible. Omit `structure:` entirely to get this same
+# default without typing it.
+#
+# `layout` is a slash-separated template of {Owner} and {FY} segments
+# describing the subtree under `path`. Categories that accumulate one
+# document per fiscal period (financial, company, utility) default to
+# "{Owner}/{FY}"; everything else defaults to "{Owner}".
+structure:
+  personal:
+    path: Personal
+    layout: "{Owner}"
+  company:
+    path: Company
+    layout: "{Owner}/{FY}"
+  financial:
+    path: Financial
+    layout: "{Owner}/{FY}"
+  travel:
+    path: Travel
+    layout: "{Owner}"
+  identity:
+    path: Identity
+    # Multi-owner or unowned identity documents land in Identity/_Shared
+    # instead of trying to guess an owner folder for them.
+    shared: _Shared
+    layout: "{Owner}"
+  insurance:
+    path: Insurance
+    layout: "{Owner}"
+  medical:
+    path: Medical
+    layout: "{Owner}"
+  legal:
+    path: Legal
+    layout: "{Owner}"
+  property:
+    path: Property
+    layout: "{Owner}"
+  vehicles:
+    path: Vehicles
+    layout: "{Owner}"
+  utility:
+    path: Utilities
+    layout: "{Owner}/{FY}"
+
+tags:
+  # Open, vault-specific vocabularies. Anything not listed here (or a
+  # configured person's tag, or a lifecycle tag below) is a `kagaz lint`
+  # finding: an uncontrolled tag vocabulary is what makes saved mdfind
+  # searches unreliable.
+  companies:
+    - acme-corp
+    - globex
+  areas:
+    - tax
+    - visa
+    - warranty
+  fiscal_years:
+    - fy2025
+    - fy2026
+  # Defaults to config.DefaultLifecycleTags() when omitted; written out here
+  # for visibility.
+  lifecycle:
+    - active
+    - superseded
+    - encrypted
+    - confidential
+    - to-action
+    - dont-touch
+
+ocr:
+  # Language hints for Apple Vision OCR (kagaz-machelper).
+  vision_languages:
+    - en-US
+  ollama:
+    # auto | true | false. "auto" only tries Ollama after pdftotext and
+    # Vision have both failed to produce usable text (e.g. a hard scan).
+    enabled: auto
+    # Required only if you want Ollama in the OCR rotation at all. Some
+    # vision models need their exact trained prompt phrase; see
+    # docs/model-use.md.
+    model: ""
+    # Must resolve to localhost; Kagaz refuses any other host, re-checked
+    # at call time, not just here.
+    endpoint: "http://localhost:11434"
+
+classify:
+  # auto | apple | mlx | ollama | rules. "auto" tries Apple Foundation
+  # Models (macOS 26+) where available and falls back to rules. A backend
+  # failure or a result below min_confidence always falls back to rules,
+  # regardless of which engine was selected.
+  engine: auto
+  # Used by the mlx and ollama engines. The default is a pinned MLX text
+  # LLM (not a vision-language model) fetched by `kagaz model pull`.
+  model: "mlx-community/Qwen2.5-3B-Instruct-4bit"
+  endpoint: "http://localhost:11434"
+  min_confidence: 0.5
+
+encrypted_docs:
+  # Leave password-protected documents encrypted in place rather than
+  # prompting to decrypt them.
+  keep_encrypted: false
+  # Only "keychain" is implemented: passwords never appear in a filename,
+  # sidecar, INDEX.md, manifest or log -- only the Keychain item name does.
+  password_store: keychain
+
+lint:
+  require_lifecycle_tag: false
+  # Doctypes for which at most one document per owner may be tagged
+  # "active" at a time -- catches "I forgot to supersede my old passport".
+  single_active_per_doctype_per_person:
+    - passport
+    - drivers-license
+    - insurance-policy
+  forbid_passwords_in_filenames: true
+
+confidential:
+  # Gates `kagaz resolve --for-send`: resolving a confidential document for
+  # handoff outside the vault always requires explicit confirmation and
+  # always writes an audit line, confirmed or refused.
+  require_confirmation_on_resolve_for_send: true
+  audit_log: vault.log
+
+# Per-vault additions to, or overrides of, the built-in doctype catalog. An
+# entry whose `name` matches a built-in replaces that built-in entirely.
+# `category` must already exist in `structure` above. `extract` regexes need
+# exactly one capture group. See CONTRIBUTING.md for when to add a doctype
+# here versus upstreaming it to internal/vaultkit/doctypes.
+doctypes:
+  - name: warranty-card
+    category: personal
+    match:
+      keywords:
+        - warranty card
+        - proof of purchase
+        - warranty period
+      patterns: []
+    extract:
+      purchase_date: '(?i)purchase\s+date[:\s]{1,4}([0-9]{1,2}[ /.\-][A-Za-z0-9]{2,9}[ /.\-][0-9]{2,4})'

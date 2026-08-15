@@ -1,0 +1,315 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://getkagaz.github.io/kagaz/vault.schema.json",
+  "title": "Kagaz vault.yaml",
+  "description": "Schema for a Kagaz vault configuration file. This mirrors internal/vaultkit/config/config.go field-for-field; if the two disagree, the Go source is authoritative and this file has a bug.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Highest vault.yaml schema version this file was written for. Defaults to 1 (config.SchemaVersion) when omitted. A version newer than the running kagaz build understands is a load error.",
+      "default": 1,
+      "minimum": 1
+    },
+    "vault_root": {
+      "type": "string",
+      "description": "Root directory of the vault. A leading ~ expands to the user's home directory. A relative path resolves against the directory containing vault.yaml, so a vault stays portable when moved wholesale.",
+      "default": "~/Documents"
+    },
+    "fiscal_year": {
+      "type": "object",
+      "description": "How calendar dates map onto fiscal periods.",
+      "additionalProperties": false,
+      "properties": {
+        "start_month": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "description": "1 = calendar year (global default). 4 = India/Japan/UK-ish. 7 = Australia. 10 = US federal.",
+          "default": 1
+        },
+        "label_format": {
+          "type": "string",
+          "description": "Template for rendering a fiscal year, using {yyyy1}, {yyyy2}, {yy1}, {yy2} placeholders. Must contain at least one placeholder. Defaults to \"FY {yyyy1}\" when start_month is 1, otherwise \"FY {yy1}-{yy2}\".",
+          "pattern": "\\{"
+        }
+      }
+    },
+    "people": {
+      "type": "array",
+      "description": "Vault owners. Every document's owner field resolves against this list.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Display form used in filenames and folders, e.g. \"Alex Rao\"."
+          },
+          "tag": {
+            "type": "string",
+            "description": "Lowercase slug used for Finder tags and CLI filters. Defaults to Slug(name), e.g. \"alex-rao\", when omitted. Must be unique across people."
+          }
+        }
+      }
+    },
+    "owner_groups": {
+      "type": "object",
+      "description": "How documents belonging to more than one person are addressed.",
+      "additionalProperties": false,
+      "properties": {
+        "separator_folder": {
+          "type": "string",
+          "description": "Joins multiple owner names in a folder path, e.g. \"Alex+Sam\".",
+          "default": "+"
+        },
+        "separator_filename": {
+          "type": "string",
+          "description": "Joins multiple owner names inside a filename field, e.g. \"Alex-Sam\".",
+          "default": "-"
+        },
+        "order": {
+          "type": "string",
+          "description": "How multiple owners are ordered before joining. Only \"alphabetical\" changes behaviour today; any other value leaves the input order as given.",
+          "default": "alphabetical"
+        }
+      }
+    },
+    "filename": {
+      "type": "object",
+      "description": "The filename grammar every conventional document name follows.",
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Field template using {Field} placeholders with optional [...] segments. Must contain {DocType}. Required fields must precede optional ones. Recognised fields: {DocType}, {Names}, {Identifier}, {Year}, {Modifier}.",
+          "default": "{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]"
+        },
+        "word_separator": {
+          "type": "string",
+          "description": "Separator used inside a single field's words, e.g. the \"-\" in \"Boarding-Pass\". Must differ from field_separator.",
+          "default": "-"
+        },
+        "field_separator": {
+          "type": "string",
+          "description": "Separator used between fields, e.g. the \"_\" in \"Invoice_Alex_Acme_2026\". Must differ from word_separator.",
+          "default": "_"
+        }
+      }
+    },
+    "structure": {
+      "type": "object",
+      "description": "Maps doctype categories onto folders beneath the vault root. Defaults to config.DefaultStructure() (personal, company, financial, travel, identity, insurance, medical, legal, property, vehicles, utility) when omitted. At least one category is required.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Folder name beneath vault_root for this category, e.g. \"Financial\". Must be a relative path with no \"..\" segment. Defaults to the title-cased category key when omitted.",
+            "not": { "pattern": "\\.\\." }
+          },
+          "shared": {
+            "type": "string",
+            "description": "Folder name used instead of {Owner} for documents owned by more than one person, or with no owner, e.g. \"_Shared\"."
+          },
+          "layout": {
+            "type": "string",
+            "description": "Slash-separated template of {Owner} and {FY} segments describing the subtree beneath path, e.g. \"{Owner}/{FY}\". Only {Owner}, {FY} and empty segments are valid. Defaults to \"{Owner}/{FY}\" for the financial, company and utility categories, and \"{Owner}\" for every other category (config.defaultLayout)."
+          }
+        }
+      }
+    },
+    "tags": {
+      "type": "object",
+      "description": "The controlled Finder-tag vocabulary. A tag outside these lists (plus people's tags) is a lint violation.",
+      "additionalProperties": false,
+      "properties": {
+        "companies": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Company/organisation tags, e.g. \"acme-corp\"."
+        },
+        "areas": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Free-form subject-area tags, e.g. \"tax\", \"visa\"."
+        },
+        "fiscal_years": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Fiscal-year tags, e.g. \"fy2026\"."
+        },
+        "lifecycle": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Lifecycle-state tags. Defaults to config.DefaultLifecycleTags(): active, superseded, encrypted, confidential, to-action, dont-touch."
+        }
+      }
+    },
+    "ocr": {
+      "type": "object",
+      "description": "Text-extraction configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "vision_languages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Language hints passed to Apple's Vision framework OCR, e.g. [\"en-US\"]. Defaults to [\"en-US\"].",
+          "default": ["en-US"]
+        },
+        "ollama": {
+          "type": "object",
+          "description": "The opt-in Ollama OCR runner, used only for images/PDFs that Vision and pdftotext could not read.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "string",
+              "enum": ["auto", "true", "false"],
+              "description": "Tri-state: \"auto\" tries Ollama only after the cheaper runners fail, \"true\" forces it into rotation, \"false\" disables it.",
+              "default": "auto"
+            },
+            "model": {
+              "type": "string",
+              "description": "Ollama vision-model name to use for OCR, e.g. \"unlimited-ocr\". Some models require an exact trained prompt phrase; see docs/model-use.md."
+            },
+            "endpoint": {
+              "type": "string",
+              "description": "Ollama HTTP endpoint. Must resolve to localhost, 127.0.0.1, ::1 or 0.0.0.0 — Kagaz refuses to configure a remote inference host.",
+              "default": "http://localhost:11434"
+            }
+          }
+        }
+      }
+    },
+    "classify": {
+      "type": "object",
+      "description": "Selects and tunes the semantic document classifier.",
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "type": "string",
+          "enum": ["auto", "apple", "mlx", "ollama", "rules"],
+          "description": "\"auto\" tries the Apple Foundation Models tier first (when available) and falls back to rules. A named engine that is unavailable is an error naming the fix, except that any backend failure or below-min_confidence result always falls back to rules.",
+          "default": "auto"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier for the mlx or ollama engines. Defaults to config.DefaultMLXModel (\"mlx-community/Qwen2.5-3B-Instruct-4bit\"), a text LLM pulled by `kagaz model pull`.",
+          "default": "mlx-community/Qwen2.5-3B-Instruct-4bit"
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "Ollama HTTP endpoint for the ollama engine. Must be localhost, checked at call time as well as at parse time.",
+          "default": "http://localhost:11434"
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum confidence a classifier result must clear before it is accepted; below this, Kagaz degrades to the rules engine and then to \"unclassified\" rather than guessing.",
+          "default": 0.5
+        }
+      }
+    },
+    "encrypted_docs": {
+      "type": "object",
+      "description": "How password-protected documents are handled.",
+      "additionalProperties": false,
+      "properties": {
+        "keep_encrypted": {
+          "type": "boolean",
+          "description": "Whether Kagaz leaves password-protected documents encrypted in place rather than prompting to decrypt.",
+          "default": false
+        },
+        "password_store": {
+          "type": "string",
+          "description": "Where the password for an encrypted document is looked up. Only \"keychain\" is implemented: passwords never appear in a filename, sidecar, INDEX.md, manifest or log — only a Keychain item name does.",
+          "default": "keychain"
+        }
+      }
+    },
+    "lint": {
+      "type": "object",
+      "description": "Enables individual convention checks run by `kagaz lint`.",
+      "additionalProperties": false,
+      "properties": {
+        "require_lifecycle_tag": {
+          "type": "boolean",
+          "description": "Every document must carry at least one lifecycle tag (active, superseded, etc.).",
+          "default": false
+        },
+        "single_active_per_doctype_per_person": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Doctype names for which at most one document per owner may carry the \"active\" tag at a time, e.g. [\"passport\", \"drivers-license\"]."
+        },
+        "forbid_passwords_in_filenames": {
+          "type": "boolean",
+          "description": "Flags filenames containing a password-looking token.",
+          "default": false
+        }
+      }
+    },
+    "confidential": {
+      "type": "object",
+      "description": "Governs `kagaz resolve --for-send`, the gate a document must pass before it is handed to something outside the vault.",
+      "additionalProperties": false,
+      "properties": {
+        "require_confirmation_on_resolve_for_send": {
+          "type": "boolean",
+          "description": "When true, resolving a confidential document for external send requires explicit confirmation. This is the confidential-resolution invariant; there is no supported way to disable the audit line itself.",
+          "default": true
+        },
+        "audit_log": {
+          "type": "string",
+          "description": "Path to the append-only audit log, relative to vault_root unless absolute.",
+          "default": "vault.log"
+        }
+      }
+    },
+    "doctypes": {
+      "type": "array",
+      "description": "Per-vault additions to, or overrides of, the built-in document-type catalog. An entry whose name matches a built-in replaces that built-in entirely.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "category"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Doctype name, e.g. \"invoice\". Slugified on load."
+          },
+          "category": {
+            "type": "string",
+            "description": "Must name a category already present in structure."
+          },
+          "match": {
+            "type": "object",
+            "description": "High-precision rules used by the offline fallback classifier.",
+            "additionalProperties": false,
+            "properties": {
+              "keywords": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Phrases matched on word boundaries, case-insensitively."
+              },
+              "patterns": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Go regular expressions matched against the raw extracted text."
+              }
+            }
+          },
+          "extract": {
+            "type": "object",
+            "description": "Field name to Go regular expression (must contain exactly one capture group) used to pull structured facts out of a matched document's text.",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

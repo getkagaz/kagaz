@@ -1,0 +1,11 @@
+RECEIPT
+
+Globex Corporation
+Transaction Receipt
+
+Receipt Number: RCT-2025-9981
+Paid In Full
+Date: 2025-11-02
+Amount: 88.50
+
+Thank you for your payment.

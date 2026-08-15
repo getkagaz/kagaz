@@ -1,0 +1,83 @@
+# Fixture vault for golden tests (search, lint, index) and manual inspection.
+# Deliberately small: three categories, two owners, plain text content. See
+# README.md in this directory for what each file is here to exercise.
+
+version: 1
+vault_root: .
+
+fiscal_year:
+  start_month: 1
+  label_format: "FY {yyyy1}"
+
+people:
+  - name: Alex Rao
+    tag: alex-rao
+  - name: Sam Rao
+    tag: sam-rao
+
+owner_groups:
+  separator_folder: "+"
+  separator_filename: "-"
+  order: alphabetical
+
+filename:
+  pattern: "{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]"
+  word_separator: "-"
+  field_separator: "_"
+
+structure:
+  financial:
+    path: Financial
+    layout: "{Owner}/{FY}"
+  travel:
+    path: Travel
+    layout: "{Owner}"
+  identity:
+    path: Identity
+    shared: _Shared
+    layout: "{Owner}"
+
+tags:
+  companies:
+    - acme-corp
+    - globex
+    - united-airlines
+  areas:
+    - tax
+  fiscal_years:
+    - fy2025
+    - fy2026
+  lifecycle:
+    - active
+    - superseded
+    - encrypted
+    - confidential
+    - to-action
+    - dont-touch
+
+ocr:
+  vision_languages:
+    - en-US
+  ollama:
+    enabled: "false"
+    endpoint: "http://localhost:11434"
+
+classify:
+  engine: rules
+  model: "mlx-community/Qwen2.5-3B-Instruct-4bit"
+  endpoint: "http://localhost:11434"
+  min_confidence: 0.5
+
+encrypted_docs:
+  keep_encrypted: false
+  password_store: keychain
+
+lint:
+  require_lifecycle_tag: false
+  single_active_per_doctype_per_person:
+    - passport
+  forbid_passwords_in_filenames: true
+
+confidential:
+  require_confirmation_on_resolve_for_send: true
+  audit_log: vault.log

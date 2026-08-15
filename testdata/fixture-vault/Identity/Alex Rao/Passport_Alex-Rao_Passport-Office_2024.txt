@@ -1,0 +1,9 @@
+PASSPORT
+
+Type P
+Passport No: X1234567
+Surname: Rao
+Given Names: Alex
+Nationality: Exampland
+Date of Expiry: 14 Mar 2034
+Place of Issue: Springfield Passport Office

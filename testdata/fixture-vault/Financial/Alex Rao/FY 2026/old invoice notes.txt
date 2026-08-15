@@ -1,0 +1,7 @@
+Random notes about an old invoice, filed by hand before Kagaz existed.
+This filename does not follow the {DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]
+grammar on purpose -- see README.md in the fixture-vault root. `kagaz lint`
+should report this file under the filename-grammar rule, and it is NOT a
+safe target for --fix (a bare rename risk-guesses at facts that aren't
+recoverable from this filename), so it stays as a permanent lint finding
+in this fixture.

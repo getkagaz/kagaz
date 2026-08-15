@@ -1,0 +1,74 @@
+name: Bug report
+description: Something in Kagaz didn't behave the way it should.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. If this is a security
+        issue (anything that could delete/corrupt a document, leak content
+        off-machine, or bypass the confidential-resolution gate), please use
+        [private vulnerability reporting](https://github.com/getkagaz/kagaz/security)
+        instead of a public issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact `kagaz` command(s) you ran, ideally against a minimal `vault.yaml`.
+      placeholder: |
+        1. `kagaz init --root /tmp/test-vault`
+        2. `kagaz ingest ./sample.pdf`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        Paste the command's output, including with `--json` if relevant.
+        Please redact any real document content, filenames, or identifiers
+        you don't want to share publicly.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: kagaz --version
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and chip (e.g. macOS 15.4, M2)
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: kagaz doctor output
+      description: Helps rule out a missing optional tool as the cause.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: This is not a security-sensitive report (see note above).
+          required: true

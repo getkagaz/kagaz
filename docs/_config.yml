@@ -1,0 +1,38 @@
+title: Kagaz
+description: A local-first, global document vault manager for macOS.
+url: "https://getkagaz.github.io"
+baseurl: "/kagaz"
+
+theme: jekyll-theme-cayman
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+
+relative_links:
+  enabled: true
+  collections: false
+
+readme_index:
+  remove_originals: false
+
+include:
+  - vault.schema.json
+
+exclude:
+  - AGENTS.template.md
+
+# Every published page's front matter supplies its own `title:`; this is
+# only a fallback for anything that slips through without one.
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      title: Kagaz documentation

@@ -1,0 +1,12 @@
+BOARDING PASS
+
+Passenger Name: Sam Rao
+Flight: UA 452
+Seat: 14C
+Gate: B12
+Group Boarding: 3
+
+Departure: Springfield (SPI) 08:05
+Arrival: Metropolis (MET) 10:40
+
+Boarding Time: 07:35

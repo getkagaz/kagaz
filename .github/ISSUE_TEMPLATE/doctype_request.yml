@@ -1,0 +1,93 @@
+name: Document type request
+description: Propose a new document type for the built-in catalog, or report a misclassification.
+title: "[doctype]: "
+labels: ["doctype"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The built-in catalog (`internal/vaultkit/doctypes/catalog.go`) is
+        for document types that are genuinely global — not tied to one
+        country's specific paperwork. A locale-specific document type
+        belongs in your own `vault.yaml`'s `doctypes:` block instead (see
+        [docs/configuration.md#doctypes](https://github.com/getkagaz/kagaz/blob/main/docs/configuration.md#doctypes))
+        — feel free to still open this if you're unsure which applies.
+
+  - type: input
+    id: name
+    attributes:
+      label: Proposed doctype name
+      description: Lowercase, dash-separated, e.g. "vaccination-certificate".
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - personal
+        - company
+        - financial
+        - travel
+        - identity
+        - insurance
+        - medical
+        - legal
+        - property
+        - vehicles
+        - utility
+        - (needs a new category — explain below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What kind of document is this?
+      description: What it's for, who typically has one, and roughly how common it is globally (not just in your country).
+    validations:
+      required: true
+
+  - type: textarea
+    id: keywords
+    attributes:
+      label: Distinguishing keywords or phrases
+      description: |
+        Phrases a real document of this kind *almost always* contains, that
+        wouldn't also appear on a plausible near-miss document. Generic
+        words ("premium", "platform") are deliberately avoided in the
+        existing catalog — a keyword that fires on the wrong document is
+        worse than no keyword at all.
+      placeholder: |
+        - "vaccination certificate"
+        - "immunisation record"
+        - "dose administered"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extract
+    attributes:
+      label: Structured fields worth extracting (optional)
+      description: Field name and what pattern identifies it, if there's something worth pulling into the sidecar (a certificate number, an expiry date, etc.).
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample text (redacted)
+      description: |
+        A representative excerpt of real document text with all personal
+        details replaced by placeholders (names, numbers, addresses). This
+        is what a test case gets built from — please don't paste an
+        unredacted document.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I've redacted all personal information from any sample text above.
+          required: true
+        - label: I believe this doctype is globally relevant, not locale-specific (or I'm unsure and want input).
+          required: true

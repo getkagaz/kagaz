@@ -1,0 +1,69 @@
+name: Feature request
+description: Suggest a new capability or an improvement to an existing one.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a new document type, please use the **Document type request**
+        template instead — it captures the specifics a doctype addition
+        needs.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation today and why it's a problem, before jumping to a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like Kagaz to do instead. A CLI flag, a new command, a config field — as concrete as you can make it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve this, and why you didn't prefer them.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - CLI (cmd/kagaz)
+        - MCP server
+        - Ingest / classification / OCR
+        - Search / lint / index
+        - Conventions / vault.yaml
+        - Menu-bar app
+        - Homebrew / packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Compatibility with Kagaz's invariants
+      description: Global constraints this project holds to regardless of feature. Check the ones you've thought through.
+      options:
+        - label: This doesn't require Kagaz to reach the network beyond `kagaz model pull`.
+        - label: This doesn't require deleting a user document outside the existing staged-move path.
+        - label: This doesn't bypass propose → preview → approve → execute for a mutating operation.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues/discussions and didn't find a duplicate.
+          required: true

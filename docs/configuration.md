@@ -1,0 +1,149 @@
+---
+title: Configuration reference
+---
+
+# Configuration reference
+
+`vault.yaml` is the single authored source of truth for a vault. Nothing in
+Kagaz hardcodes folder names, filename grammar, fiscal-year math, tag
+vocabulary or the doctype catalog — all of it resolves from this file. This
+page documents every field parsed by `internal/vaultkit/config`; the
+machine-readable version is [`vault.schema.json`](vault.schema.json), and a
+fully commented starting point is [`examples/vault.yaml`](../examples/vault.yaml).
+
+`kagaz init` writes a minimal `vault.yaml`; every field below has a sensible
+default, so a new vault needs only `people:` to be useful.
+
+## `version`
+
+Highest schema version this file was written for. Defaults to `1`. A
+`vault.yaml` whose `version` is newer than the running `kagaz` build
+understands fails to load with a message telling you to upgrade.
+
+## `vault_root`
+
+Root directory of the vault. Defaults to `~/Documents`. A leading `~`
+expands to your home directory. A **relative** path resolves against the
+directory holding `vault.yaml` itself, so a vault stays portable if you move
+it (or its containing folder) wholesale — including into and out of iCloud
+Drive.
+
+## `fiscal_year`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `start_month` | `1` | 1–12. `1`=calendar year, `4`=India/Japan/UK-ish, `7`=Australia, `10`=US federal. |
+| `label_format` | `"FY {yyyy1}"` (start_month 1) or `"FY {yy1}-{yy2}"` (otherwise) | Must contain a `{...}` placeholder: `{yyyy1}`, `{yyyy2}`, `{yy1}`, `{yy2}`. |
+
+## `people`
+
+A list of `{name, tag}`. `tag` defaults to a lowercase slug of `name` (e.g.
+`"Alex Rao"` → `alex-rao`) and must be unique across the vault — two people
+sharing a tag is a config error.
+
+## `owner_groups`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `separator_folder` | `"+"` | Joins multiple owners in a folder path: `Alex+Sam`. |
+| `separator_filename` | `"-"` | Joins multiple owners in a filename field: `Alex-Sam`. |
+| `order` | `"alphabetical"` | Only this value changes ordering behavior today. |
+
+## `filename`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `pattern` | `"{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]"` | Must contain `{DocType}`; required fields precede optional ones. |
+| `word_separator` | `"-"` | Must differ from `field_separator`. |
+| `field_separator` | `"_"` | Must differ from `word_separator`. |
+
+## `structure`
+
+A map from category name to:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `path` | title-cased category name | Relative folder beneath `vault_root`; no `..`. |
+| `shared` | *(unset)* | Folder used instead of `{Owner}` for multi-owner or unowned documents. |
+| `layout` | `"{Owner}/{FY}"` for `financial`, `company`, `utility`; `"{Owner}"` otherwise | Slash-separated template of `{Owner}` and `{FY}` segments describing the subtree under `path`. |
+
+Omitting `structure` entirely uses the global-first default: `personal`,
+`company`, `financial`, `travel`, `identity` (shared: `_Shared`),
+`insurance`, `medical`, `legal`, `property`, `vehicles`, `utility`.
+
+`layout` is what decides whether a category accumulates one folder per
+fiscal year (documents that recur every period, like utility bills or
+invoices) or stays flat per owner (documents that don't, like a passport). A
+vault that wants, say, medical records split by year as well just sets
+`structure.medical.layout: "{Owner}/{FY}"`.
+
+## `tags`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `companies` | `[]` | Free-form organisation tags. |
+| `areas` | `[]` | Free-form subject-area tags. |
+| `fiscal_years` | `[]` | Free-form fiscal-year tags. |
+| `lifecycle` | `active, superseded, encrypted, confidential, to-action, dont-touch` | The controlled lifecycle-state vocabulary. |
+
+Every configured person's `tag` is also implicitly part of the controlled
+vocabulary. Anything outside all of these is a `kagaz lint` finding.
+
+## `ocr`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `vision_languages` | `["en-US"]` | Language hints for Apple Vision OCR. |
+| `ollama.enabled` | `"auto"` | `"auto"` \| `"true"` \| `"false"`. |
+| `ollama.model` | *(unset)* | Ollama vision-model name, e.g. `unlimited-ocr`. |
+| `ollama.endpoint` | `"http://localhost:11434"` | Must resolve to localhost; enforced at parse time and re-checked at call time. |
+
+## `classify`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `engine` | `"auto"` | `auto` \| `apple` \| `mlx` \| `ollama` \| `rules`. |
+| `model` | `"mlx-community/Qwen2.5-3B-Instruct-4bit"` | Model id for `mlx`/`ollama`. |
+| `endpoint` | `"http://localhost:11434"` | Must resolve to localhost. |
+| `min_confidence` | `0.5` | 0–1. Below this, Kagaz degrades to `rules`, then to `unclassified`. |
+
+`auto` tries the Apple Foundation Models tier (when the OS and device
+support it) and falls back to `rules`. A named engine that is unavailable is
+an error naming the fix (e.g. `run kagaz model pull --engine mlx`) — except
+that a *runtime* classifier failure, or a result under `min_confidence`,
+always falls back to `rules` rather than failing the whole `ingest`.
+
+## `encrypted_docs`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `keep_encrypted` | `false` | Leave password-protected documents encrypted in place. |
+| `password_store` | `"keychain"` | Only `"keychain"` is implemented. |
+
+Passwords never appear anywhere in the vault — not in a filename, sidecar,
+`INDEX.md`, manifest, or log. Only the Keychain **item name** is recorded.
+
+## `lint`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `require_lifecycle_tag` | `false` | Every document must carry a lifecycle tag. |
+| `single_active_per_doctype_per_person` | `[]` | Doctype names allowing only one `active` document per owner. |
+| `forbid_passwords_in_filenames` | `false` | Flags password-looking tokens in filenames. |
+
+## `confidential`
+
+| Field | Default | Meaning |
+|---|---|---|
+| `require_confirmation_on_resolve_for_send` | `true` | Gates `kagaz resolve --for-send`. |
+| `audit_log` | `"vault.log"` | Relative to `vault_root` unless absolute. |
+
+See [commands.md](commands.md#resolve---for-send) for exactly what the gate
+does.
+
+## `doctypes`
+
+A list of `{name, category, match: {keywords, patterns}, extract}` entries
+that extend or override the built-in catalog. `category` must already exist
+in `structure`. See
+[CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-doctype) for how to add one.

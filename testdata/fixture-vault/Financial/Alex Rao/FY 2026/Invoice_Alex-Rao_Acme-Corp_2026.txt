@@ -1,0 +1,18 @@
+INVOICE
+
+Acme Corp
+123 Market Street
+Springfield
+
+Invoice Number: INV-2026-0417
+Bill To: Alex Rao
+Date: 2026-01-14
+Due Date: 2026-02-13
+
+Description                     Amount
+Consulting services (Jan 2026)  1200.00
+Materials                         40.00
+
+Total Due: 1240.00
+
+Thank you for your business.
