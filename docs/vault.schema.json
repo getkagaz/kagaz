@@ -67,8 +67,8 @@
         },
         "separator_filename": {
           "type": "string",
-          "description": "Joins multiple owner names inside a filename field, e.g. \"Alex-Sam\".",
-          "default": "-"
+          "description": "Joins multiple owner names inside a filename field, e.g. \"Alex+Sam\". Must differ from filename.word_separator, or a filename stops being invertible.",
+          "default": "+"
         },
         "order": {
           "type": "string",

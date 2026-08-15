@@ -535,3 +535,79 @@ func TestFixIsANoOpInDryRun(t *testing.T) {
 		t.Errorf("a dry run moved a file: %v", err)
 	}
 }
+
+// TestUnfiledRuleFires is F4's other half: a file outside every category folder
+// is reported, and never repaired — Kagaz cannot know where it belongs.
+func TestUnfiledRuleFires(t *testing.T) {
+	v := newVault(t, "")
+	v.write("dropped-at-the-root.pdf", "x")
+	v.write("Unsorted/holiday-scan.pdf", "x")
+	v.write("Financial/Alex-Rao/FY 2026/Invoice_Alex-Rao_Acme-Corp_2026.txt", "x")
+
+	findings := v.run()
+	for _, rel := range []string{"dropped-at-the-root.pdf", "Unsorted/holiday-scan.pdf"} {
+		f := hasRule(findings, RuleUnfiled, rel)
+		if f == nil {
+			t.Fatalf("rule did not fire for %s", rel)
+		}
+		if f.Fixable {
+			t.Errorf("%s: an unfiled document has no provable destination", rel)
+		}
+	}
+	if hasRule(findings, RuleUnfiled, "Financial/Alex-Rao/FY 2026/Invoice_Alex-Rao_Acme-Corp_2026.txt") != nil {
+		t.Error("a correctly filed document was reported as unfiled")
+	}
+}
+
+// TestAmbiguousOwnersDeclineToAssertAPlacement is F2. With
+// owner_groups.separator_filename set to "-" (the old default, still a legal
+// choice), "Jordan-Lee" is readable as one person or as two, and Jordan Lee is
+// not in people:. The old code emitted `wrong-folder fixable=true` pointing at
+// an invented "Jordan+Lee" owner-group folder, so --fix relocated a correctly
+// filed document.
+func TestAmbiguousOwnersDeclineToAssertAPlacement(t *testing.T) {
+	v := newVault(t, "owner_groups:\n  separator_filename: \"-\"\n")
+	rel := "Financial/Jordan-Lee/FY 2026/Invoice_Jordan-Lee_Acme-Corp_2026.txt"
+	v.write(rel, "x")
+
+	findings := v.run()
+	for _, f := range findings {
+		if f.Rule == RuleWrongFolder || f.Rule == RuleNameNormalization {
+			t.Errorf("%s asserted a destination for an unresolvable owner: %+v", f.Rule, f.Repair)
+		}
+	}
+
+	res, err := v.linter().Fix(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Fixed) != 0 {
+		t.Errorf("--fix touched a document it cannot place: %+v", summarize(res.Fixed))
+	}
+	if _, err := os.Stat(filepath.Join(v.cfg.VaultRoot, filepath.FromSlash(rel))); err != nil {
+		t.Errorf("the correctly filed document was moved: %v", err)
+	}
+}
+
+// TestUnconfiguredOwnerIsStillPlacedUnderTheDefaultGrammar is the other side of
+// F2: with the default (unambiguous) separator, a document owned by someone not
+// in people: is read correctly, so the placement rules can and should apply.
+func TestUnconfiguredOwnerIsStillPlacedUnderTheDefaultGrammar(t *testing.T) {
+	v := newVault(t, "")
+	correct := "Financial/Jordan-Lee/FY 2026/Invoice_Jordan-Lee_Acme-Corp_2026.txt"
+	v.write(correct, "x")
+	misplaced := "Travel/Jordan-Lee/Invoice_Jordan-Lee_Acme-Corp_2026.txt"
+	v.write(misplaced, "x")
+
+	findings := v.run()
+	if f := hasRule(findings, RuleWrongFolder, correct); f != nil {
+		t.Errorf("a correctly filed document was flagged: %+v", f.Repair)
+	}
+	f := hasRule(findings, RuleWrongFolder, misplaced)
+	if f == nil {
+		t.Fatal("a genuinely misplaced document was not flagged")
+	}
+	if f.Repair.MoveTo != correct {
+		t.Errorf("repair.MoveTo = %q, want %q", f.Repair.MoveTo, correct)
+	}
+}

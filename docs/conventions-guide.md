@@ -33,7 +33,7 @@ Recognized fields:
 | Field | Meaning | Example |
 |---|---|---|
 | `{DocType}` | Catalog document type, title-cased | `Invoice`, `Boarding-Pass` |
-| `{Names}` | Owner(s), joined by `owner_groups.separator_filename` | `Alex-Rao`, `Alex-Sam` |
+| `{Names}` | Owner(s), joined by `owner_groups.separator_filename` | `Alex-Rao`, `Alex+Sam` |
 | `{Identifier}` | Issuer, counterparty or subject | `Acme-Corp` |
 | `{Year}` | A 4-digit year, when known | `2026` |
 | `{Modifier}` | Free qualifier | `Final`, `Renewal` |

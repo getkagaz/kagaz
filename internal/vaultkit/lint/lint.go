@@ -70,6 +70,8 @@ const (
 	RuleStaleSidecar = "stale-sidecar"
 	// RuleOrphanSidecar: a sidecar whose document is not there.
 	RuleOrphanSidecar = "orphan-sidecar"
+	// RuleUnfiled: a file outside every configured category folder.
+	RuleUnfiled = "unfiled"
 )
 
 // RuleDoc describes one rule for `kagaz lint --list-rules` and for the docs.
@@ -96,6 +98,7 @@ func Rules() []RuleDoc {
 		{RulePasswordInFilename, SeverityError, false, "a password-looking token in a filename, where lint.forbid_passwords_in_filenames is set"},
 		{RuleStaleSidecar, SeverityWarning, false, "the sidecar's source_sha256 does not match the document; re-extract with kagaz ingest --reindex"},
 		{RuleOrphanSidecar, SeverityInfo, false, "a sidecar whose document is not present"},
+		{RuleUnfiled, SeverityWarning, false, "a file outside every configured category folder; Kagaz cannot know where it belongs, so it is reported and never moved"},
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -227,6 +230,15 @@ func (l *Linter) checkDocument(doc *search.Document) []Finding {
 		}
 	}
 
+	if doc.Category == "" {
+		add(Finding{
+			Rule:     RuleUnfiled,
+			Severity: SeverityWarning,
+			Message: "file is outside every configured category folder; file it under one of " +
+				strings.Join(l.categoryNames(), ", ") + " (`kagaz ingest` proposes a place for it)",
+		})
+	}
+
 	switch {
 	case !doc.Parsed:
 		f := Finding{
@@ -261,6 +273,15 @@ func (l *Linter) checkDocument(doc *search.Document) []Finding {
 // filename's own rendering and the folder it lives in. Both report MoveTo as
 // the fully canonical path, and Fix collapses them into a single move.
 func (l *Linter) checkPlacement(doc *search.Document) []Finding {
+	if doc.Doc.OwnersAmbiguous {
+		// The filename's owner field is readable as one person or as several,
+		// and nothing in the vault settles it. Asserting a destination here
+		// would move a correctly filed document into an invented owner-group
+		// folder, which is exactly the guess --fix must never make. Configuring
+		// owner_groups.separator_filename differently from
+		// filename.word_separator removes the ambiguity for good.
+		return nil
+	}
 	want := doc.Doc
 	cat, ok := l.catalog.CategoryOf(want.DocType)
 	if !ok {
@@ -487,6 +508,17 @@ func (l *Linter) renameFromSidecar(doc *search.Document) (string, bool) {
 		return "", false
 	}
 	return l.rel(canonical), true
+}
+
+// categoryNames lists the vault's configured categories, sorted, for a message
+// that has to tell a user where a file could go.
+func (l *Linter) categoryNames() []string {
+	out := make([]string, 0, len(l.cfg.Structure))
+	for name := range l.cfg.Structure {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // rel renders an absolute vault path relative to the vault root.

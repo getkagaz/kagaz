@@ -11,19 +11,18 @@ import (
 
 // Finder narrows a query to a set of candidate paths.
 //
-// A Finder is an accelerator and never a source of truth. Kagaz uses the
-// candidate set for exactly one thing: to skip reading the sidecar of a file
-// that Spotlight excluded *and* that does not already match on the facts in its
-// own name, path or Finder tags. Every candidate is still verified against the
-// filesystem walk, so a Finder can never add a result, only save work.
+// A Finder is an accelerator and never a source of truth, and the way that is
+// guaranteed is that its answer cannot reach the result set at all: Kagaz reads
+// the sidecars of the candidates early (see Searcher.prefetch) and then walks
+// the whole vault regardless, deciding every match from the filesystem. A
+// Spotlight index that is stale, partial, over-eager or absent therefore costs
+// at most some wasted I/O.
 //
-// The one behaviour a Finder can therefore affect is a match that exists solely
-// inside a sidecar's extracted text on a file Spotlight's index has not caught
-// up with. Anything else — filenames, parsed facts, tags — is read by the walk
-// regardless. `kagaz find` results are identical with and without a Finder on a
-// current index; the equivalence test in this package asserts that on the
-// fixture vault, and passing a nil Spotlight is all it takes to force the pure
-// filesystem path.
+// `kagaz find` returns identical results with and without a Finder — not
+// "identical on a current index", identical. The equivalence test in this
+// package asserts that on the fixture vault across complete, under-reporting,
+// over-reporting, empty, declining and failing Finders, and passing a nil
+// Spotlight is all it takes to force the pure filesystem path.
 type Finder interface {
 	// Available reports whether the accelerator can be used at all.
 	Available() bool

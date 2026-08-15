@@ -37,7 +37,7 @@ people:
 owner_groups:
   # How a document belonging to more than one person is addressed.
   separator_folder: "+"      # folder name for shared docs: "Alex+Sam"
-  separator_filename: "-"    # filename field for shared docs: "Alex-Sam"
+  separator_filename: "+"    # filename field for shared docs: "Alex+Sam"
   order: alphabetical        # only "alphabetical" changes ordering today
 
 filename:

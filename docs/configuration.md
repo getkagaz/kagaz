@@ -46,7 +46,7 @@ sharing a tag is a config error.
 | Field | Default | Meaning |
 |---|---|---|
 | `separator_folder` | `"+"` | Joins multiple owners in a folder path: `Alex+Sam`. |
-| `separator_filename` | `"-"` | Joins multiple owners in a filename field: `Alex-Sam`. |
+| `separator_filename` | `"+"` | Joins multiple owners in a filename field: `Alex+Sam`. It must differ from `filename.word_separator`, or a filename stops being invertible: with both set to `-`, `Alex-Rao` reads equally well as one person or as two. |
 | `order` | `"alphabetical"` | Only this value changes ordering behavior today. |
 
 ## `filename`

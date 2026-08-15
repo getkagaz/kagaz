@@ -11,6 +11,7 @@ import (
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 	"github.com/getkagaz/kagaz/internal/vaultkit/search"
+	"github.com/getkagaz/kagaz/internal/vaultkit/tags"
 )
 
 // update rewrites the golden files. Run `go test ./internal/vaultkit/index
@@ -43,6 +44,12 @@ func fixtureRender(t *testing.T) (indexMD, agentsMD string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Tag reading is pinned to "supported, none set" rather than left to the
+	// host filesystem. Linux rejects the Apple tag xattr namespace outright
+	// (EOPNOTSUPP) while APFS reports simply "no attribute", and INDEX.md now
+	// says different things about those two states — correctly. The golden file
+	// pins what the vault contains, not what the filesystem under it can do.
+	s.ReadTags = func(string) ([]string, error) { return nil, nil }
 	tree, err := s.Scan(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -263,5 +270,35 @@ func TestWriteProducesBothFiles(t *testing.T) {
 		if string(b) != first[i] {
 			t.Errorf("%s changed on a second run over an unchanged vault", filepath.Base(p))
 		}
+	}
+}
+
+// TestTagsUnsupportedIsReportedAsSuch is F6: "no tags are set" and "tags cannot
+// be read here" are different facts, and a vault synced onto a filesystem
+// without extended attributes has not lost its tags.
+func TestTagsUnsupportedIsReportedAsSuch(t *testing.T) {
+	cfg := fixtureConfig(t)
+	s, err := search.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ReadTags = func(string) ([]string, error) { return nil, tags.ErrUnsupported }
+	tree, err := s.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := g.Index(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(idx, "No Finder tags are set") {
+		t.Error("INDEX.md claims nothing is tagged on a filesystem that cannot read tags")
+	}
+	if !strings.Contains(idx, "cannot be read on this filesystem") {
+		t.Error("INDEX.md does not explain that tags are unreadable here")
 	}
 }

@@ -214,67 +214,44 @@ func (s *Searcher) Catalog() *doctypes.Catalog { return s.catalog }
 // Calendar returns the vault's fiscal calendar.
 func (s *Searcher) Calendar() fycal.Calendar { return s.cal }
 
-// Roots returns the absolute directories a walk covers: the folder of every
-// configured category, sorted, with any directory nested inside another dropped
-// so no file is visited twice.
-//
-// Documents live in category folders. The vault root itself holds vault.yaml,
-// the generated INDEX.md/AGENTS.md, the manifests folder and the staging
-// folder, none of which is a document, so the root is deliberately not walked
-// as a whole.
-func (s *Searcher) Roots() []string {
-	seen := map[string]bool{}
-	var roots []string
-	for _, cat := range s.cfg.Structure {
-		p := filepath.Clean(filepath.Join(s.cfg.VaultRoot, cat.Path))
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		roots = append(roots, p)
-	}
-	sort.Strings(roots)
+// Roots returns the absolute directories a walk covers. The walk starts at the
+// vault root: a document that is not in a category folder is still a document,
+// and a tool whose job is keeping the vault honest cannot make the files it
+// disapproves of invisible. Category folders are recognised during the walk,
+// and anything outside them is reported (as the lint rule `unfiled`), not
+// hidden.
+func (s *Searcher) Roots() []string { return []string{filepath.Clean(s.cfg.VaultRoot)} }
 
-	var kept []string
-	for _, r := range roots {
-		nested := false
-		for _, other := range kept {
-			if r != other && strings.HasPrefix(r, other+string(filepath.Separator)) {
-				nested = true
-				break
-			}
-		}
-		if !nested {
-			kept = append(kept, r)
-		}
+// rootPlumbing lists the vault-root files that are Kagaz's own or the vault's
+// documentation about itself, rather than filed documents. The check applies at
+// the vault root only: a README inside a category folder is a document like any
+// other.
+func (s *Searcher) rootPlumbing(name string) bool {
+	switch name {
+	case config.FileName, "INDEX.md", "AGENTS.md", "README.md":
+		return true
 	}
-	return kept
-}
-
-// categoryOfRoot maps an absolute category root back to its category name.
-func (s *Searcher) categoryOfRoot(root string) string {
-	for name, cat := range s.cfg.Structure {
-		if filepath.Clean(filepath.Join(s.cfg.VaultRoot, cat.Path)) == root {
-			return name
-		}
-	}
-	return ""
+	return name == filepath.Base(s.cfg.AuditLogPath())
 }
 
 // Scan walks the vault and returns every document, fully hydrated.
 func (s *Searcher) Scan(ctx context.Context) (*Tree, error) {
-	return s.scan(ctx, nil, Query{})
+	return s.scan(ctx, nil)
 }
 
 // Find returns the documents matching q, sorted by path relative to the vault
 // root.
+//
+// Spotlight, when configured, is consulted first — but only to warm the
+// sidecars of the files it believes match, never to decide which files are
+// considered. The walk below sees every document either way.
 func (s *Searcher) Find(ctx context.Context, q Query) ([]Document, error) {
 	period, err := s.period(q)
 	if err != nil {
 		return nil, err
 	}
-	candidates := s.narrow(ctx, q)
-	tree, err := s.scan(ctx, candidates, q)
+	cache := s.prefetch(ctx, q)
+	tree, err := s.scan(ctx, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -287,12 +264,14 @@ func (s *Searcher) Find(ctx context.Context, q Query) ([]Document, error) {
 	return out, nil
 }
 
-// narrow asks Spotlight for a candidate set. A nil result means "no narrowing":
-// either Spotlight is unavailable, the query is not accelerable, or Spotlight
-// answered with nothing at all — which is indistinguishable from an index that
-// has not caught up yet, and so is treated as no answer rather than as an empty
-// result set.
-func (s *Searcher) narrow(ctx context.Context, q Query) map[string]bool {
+// prefetch asks Spotlight which files it believes match and reads their
+// sidecars up front, returning them keyed by document path.
+//
+// This is the accelerator's entire effect, and it is deliberately one that
+// cannot change an answer: the candidate set decides only what is read early,
+// so a stale, partial or over-eager Spotlight index costs at most a little
+// wasted or unhelpful I/O. Nothing is filtered by it.
+func (s *Searcher) prefetch(ctx context.Context, q Query) map[string]*sidecar.Meta {
 	if s.Spotlight == nil || !accelerable(q) {
 		return nil
 	}
@@ -300,13 +279,22 @@ func (s *Searcher) narrow(ctx context.Context, q Query) map[string]bool {
 	if err != nil || !ok || len(paths) == 0 {
 		return nil
 	}
-	set := make(map[string]bool, len(paths))
+	cache := make(map[string]*sidecar.Meta, len(paths))
 	for _, p := range paths {
-		if abs, err := filepath.Abs(p); err == nil {
-			set[abs] = true
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
 		}
+		if _, seen := cache[abs]; seen {
+			continue
+		}
+		meta, err := sidecar.ReadFile(sidecar.Path(abs))
+		if err != nil {
+			continue
+		}
+		cache[abs] = meta
 	}
-	return set
+	return cache
 }
 
 // accelerable reports whether Spotlight can contribute anything to q. Only the
@@ -317,12 +305,10 @@ func accelerable(q Query) bool {
 	return q.Text != "" || len(q.Tags) > 0 || q.Active
 }
 
-// scan walks the category roots. candidates, when non-nil, is Spotlight's
-// narrowed set: a file outside it that does not already match on the facts in
-// its own name is skipped without reading its sidecar. That skip is the entire
-// benefit of the accelerator, and it is also its entire risk — see the note on
-// Finder in spotlight.go.
-func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query) (*Tree, error) {
+// scan walks the vault. cache, when non-nil, holds sidecars already read by the
+// Spotlight prefetch; it is an I/O shortcut and holds exactly what a read would
+// have returned.
+func (s *Searcher) scan(ctx context.Context, cache map[string]*sidecar.Meta) (*Tree, error) {
 	tree := &Tree{}
 	// Documents found as iCloud placeholders, keyed by their real path.
 	evicted := map[string]bool{}
@@ -330,15 +316,9 @@ func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query
 	sidecars := map[string]string{}
 	docPaths := map[string]bool{}
 
-	period, err := s.period(q)
-	if err != nil {
-		return nil, err
-	}
-
 	for _, root := range s.Roots() {
-		category := s.categoryOfRoot(root)
 		if _, err := os.Stat(root); err != nil {
-			continue // a category folder that has not been created yet is not an error
+			continue // a vault whose root has not been created yet is not an error
 		}
 		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -353,7 +333,7 @@ func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query
 			}
 			name := d.Name()
 			if d.IsDir() {
-				if path != root && (skipDir(name) || path == s.cfg.ManifestDir() || path == s.cfg.StagingDir()) {
+				if path != root && s.skipDir(path, name) {
 					return fs.SkipDir
 				}
 				return nil
@@ -370,6 +350,8 @@ func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query
 				// Any other dotfile is Kagaz's business or the operating
 				// system's, never a document.
 				return nil
+			case filepath.Dir(path) == root && s.rootPlumbing(name):
+				return nil
 			}
 			docPaths[path] = true
 			info, ierr := d.Info()
@@ -379,13 +361,8 @@ func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query
 				size = info.Size()
 				mod = info.ModTime()
 			}
-			doc := s.hydrate(path, category, size, mod)
-			if candidates != nil && !candidates[path] && !s.match(&doc, q, period) {
-				// Spotlight excluded this file and nothing in its name, path or
-				// tags matches either: skip the sidecar read.
-				return nil
-			}
-			s.attachSidecar(&doc)
+			doc := s.hydrate(path, s.categoryOf(path), size, mod)
+			s.attachSidecar(&doc, cache)
 			tree.Documents = append(tree.Documents, doc)
 			return nil
 		})
@@ -405,7 +382,7 @@ func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query
 		}
 		doc := s.hydrate(path, s.categoryOf(path), 0, time.Time{})
 		doc.Evicted = true
-		s.attachSidecar(&doc)
+		s.attachSidecar(&doc, cache)
 		tree.Documents = append(tree.Documents, doc)
 		docPaths[path] = true
 	}
@@ -425,18 +402,18 @@ func (s *Searcher) scan(ctx context.Context, candidates map[string]bool, q Query
 }
 
 // skipDir reports whether a directory is Kagaz plumbing rather than vault
-// content, by name. The vault's configured manifest and staging directories are
-// checked by absolute path at the call site; these names are also skipped
-// wherever they appear, because a manifests folder or a staging folder nested
-// inside a category is the same plumbing wherever a user put it.
-func skipDir(name string) bool {
-	if name == ".git" {
+// content. The manifest and staging directories are matched by their configured
+// paths — a vault that renames its staging folder must still have it skipped —
+// and by name as well, because the same folders nested inside a category are
+// the same plumbing wherever a user put them.
+func (s *Searcher) skipDir(path, name string) bool {
+	if name == ".git" || strings.HasPrefix(name, ".") {
 		return true
 	}
-	if strings.HasPrefix(name, ".") {
+	if path == s.cfg.ManifestDir() || path == s.cfg.StagingDir() {
 		return true
 	}
-	return name == "manifests" || name == "_To-Delete-After-Verification"
+	return name == filepath.Base(s.cfg.ManifestDir()) || name == filepath.Base(s.cfg.StagingDir())
 }
 
 // isPlaceholder reports whether name is an iCloud eviction placeholder.
@@ -458,7 +435,6 @@ func (s *Searcher) hydrate(path, category string, size int64, mod time.Time) Doc
 	}
 	if parsed, ok := s.conv.Parse(name); ok {
 		doc.Doc = parsed
-		doc.Doc.Owners = s.ResolveOwners(parsed.Owners)
 		doc.Parsed = true
 		if cat, ok := s.catalog.CategoryOf(parsed.DocType); ok {
 			doc.Doc.Category = cat
@@ -482,79 +458,14 @@ func (s *Searcher) hydrate(path, category string, size int64, mod time.Time) Doc
 	return doc
 }
 
-// ResolveOwners maps the owner words parsed out of a filename back onto the
-// vault's configured people.
-//
-// It exists because a vault may — and the default grammar does — use the same
-// character for owner_groups.separator_filename and filename.word_separator.
-// "Alex-Rao" then parses into the two owner words "Alex" and "Rao", which is
-// all conventions.Parse can know without the people list. Reading that as two
-// owners would put the document in a shared folder and make lint demand a move
-// of a correctly filed file, so the people list is consulted here: a run of
-// words that spells a configured person becomes that person.
-//
-// A token that does not resolve is returned unchanged. Kagaz never invents an
-// owner, and a document belonging to someone not in vault.yaml stays exactly as
-// its filename says.
-func (s *Searcher) ResolveOwners(parsed []string) []string {
-	if len(parsed) == 0 || len(s.cfg.People) == 0 {
-		return parsed
-	}
-	sep := s.cfg.OwnerGroup.SeparatorFilename
-	if sep == "" {
-		return parsed
-	}
-	words := make([]string, 0, len(parsed))
-	for _, o := range parsed {
-		words = append(words, s.conv.Word(o))
-	}
-	token := strings.Join(words, sep)
-
-	// Longest spelling first, so "Alex-Rao" wins over a hypothetical "Alex".
-	type person struct{ word, name string }
-	people := make([]person, 0, len(s.cfg.People))
-	for _, p := range s.cfg.People {
-		if w := s.conv.Word(p.Name); w != "" {
-			people = append(people, person{word: w, name: p.Name})
+// attachSidecar reads the document's sidecar, preferring one already read by
+// the Spotlight prefetch. A malformed sidecar is ignored rather than fatal.
+func (s *Searcher) attachSidecar(doc *Document, cache map[string]*sidecar.Meta) {
+	if meta, ok := cache[doc.Path]; ok {
+		if meta != nil {
+			doc.Meta = meta
+			doc.HasSidecar = true
 		}
-	}
-	sort.Slice(people, func(i, j int) bool {
-		if len(people[i].word) != len(people[j].word) {
-			return len(people[i].word) > len(people[j].word)
-		}
-		return people[i].word < people[j].word
-	})
-
-	var out []string
-	for rest := token; rest != ""; {
-		matched := false
-		for _, p := range people {
-			if !strings.HasPrefix(strings.ToLower(rest), strings.ToLower(p.word)) {
-				continue
-			}
-			tail := rest[len(p.word):]
-			if tail != "" && !strings.HasPrefix(tail, sep) {
-				continue // a longer word that merely starts with this person's
-			}
-			out = append(out, p.name)
-			rest = strings.TrimPrefix(tail, sep)
-			matched = true
-			break
-		}
-		if !matched {
-			return parsed
-		}
-	}
-	if len(out) == 0 {
-		return parsed
-	}
-	return out
-}
-
-// attachSidecar reads the document's sidecar, if any. A malformed sidecar is
-// ignored rather than fatal.
-func (s *Searcher) attachSidecar(doc *Document) {
-	if doc.Meta != nil || doc.HasSidecar {
 		return
 	}
 	meta, err := sidecar.ReadFile(doc.SidecarPath)
@@ -565,15 +476,22 @@ func (s *Searcher) attachSidecar(doc *Document) {
 	doc.HasSidecar = true
 }
 
-// categoryOf returns the category whose folder contains path.
+// categoryOf returns the category whose folder contains path, preferring the
+// most specific when one category's folder is nested inside another's. An empty
+// result means the file is outside every configured category, which lint
+// reports as `unfiled`.
 func (s *Searcher) categoryOf(path string) string {
+	best, bestLen := "", -1
 	for name, cat := range s.cfg.Structure {
 		root := filepath.Clean(filepath.Join(s.cfg.VaultRoot, cat.Path))
-		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
-			return name
+		if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+			continue
+		}
+		if len(root) > bestLen || (len(root) == bestLen && name < best) {
+			best, bestLen = name, len(root)
 		}
 	}
-	return ""
+	return best
 }
 
 // rel returns path relative to the vault root, slash-separated.

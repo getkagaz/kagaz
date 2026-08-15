@@ -274,17 +274,29 @@ func (g *Generator) tagVocabulary() string {
 	return b.String()
 }
 
-// tagsInUse counts the tags actually applied to documents. On a filesystem with
-// no extended-attribute support this is simply empty, which is reported as such
-// rather than as an error.
+// tagsInUse counts the tags actually applied to documents.
+//
+// "No tags are set" and "tags cannot be read here" are different facts and are
+// reported differently: a vault synced onto a filesystem without
+// extended-attribute support has not lost its tags, and telling its owner that
+// nothing is tagged would be false.
 func (g *Generator) tagsInUse(docs []search.Document) string {
 	counts := map[string]int{}
+	unsupported := false
 	for i := range docs {
+		if docs[i].TagsUnsupported {
+			unsupported = true
+		}
 		for _, t := range docs[i].Tags {
 			counts[t]++
 		}
 	}
 	if len(counts) == 0 {
+		if unsupported {
+			return "_Finder tags cannot be read on this filesystem — it does not support extended\n" +
+				"attributes, so this section says nothing about whether documents are tagged.\n" +
+				"`kagaz doctor` reports the same._\n"
+		}
 		return "_No Finder tags are set on any document in this vault yet._\n"
 	}
 	var b strings.Builder

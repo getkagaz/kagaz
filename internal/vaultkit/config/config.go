@@ -321,7 +321,17 @@ func (c *Config) applyDefaults() {
 		c.OwnerGroup.SeparatorFolder = "+"
 	}
 	if c.OwnerGroup.SeparatorFilename == "" {
-		c.OwnerGroup.SeparatorFilename = "-"
+		// "+" rather than "-": the owner separator must differ from
+		// filename.word_separator, or the grammar stops being invertible.
+		// With both set to "-", "Alex-Rao" reads equally well as the single
+		// person "Alex Rao" and as the two owners "Alex" and "Rao", and
+		// nothing in the filename can settle it -- so Kagaz has to guess
+		// where the document belongs. Matching separator_folder makes
+		// "Alex-Rao" one person and "Alex+Sam" two, by construction.
+		// A vault may still configure "-" explicitly; conventions.Parse
+		// resolves that ambiguity against people:, and lint declines to
+		// assert a destination when it cannot.
+		c.OwnerGroup.SeparatorFilename = "+"
 	}
 	if c.OwnerGroup.Order == "" {
 		c.OwnerGroup.Order = "alphabetical"

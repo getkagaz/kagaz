@@ -33,6 +33,16 @@ type Doc struct {
 	Year       int      // 0 when absent
 	Modifier   string   // free-form qualifier, e.g. "Final", "Renewal"
 	Ext        string   // file extension including the dot, e.g. ".pdf"
+
+	// OwnersAmbiguous reports that Parse could not tell how many people the
+	// filename's owner field names. It is only ever true for a vault that
+	// configures owner_groups.separator_filename equal to
+	// filename.word_separator, where "Jordan-Lee" is equally readable as one
+	// person or as two and the people list settles neither. Callers that would
+	// otherwise assert where the document belongs -- lint's placement rules --
+	// must decline rather than guess. Zero value false, so a Doc built by hand
+	// (ingest, tests) is never treated as ambiguous.
+	OwnersAmbiguous bool
 }
 
 // Conventions renders and parses names for one vault.
@@ -236,7 +246,121 @@ func (c *Conventions) Parse(filename string) (Doc, bool) {
 	if doc.DocType == "" {
 		return Doc{}, false
 	}
+	doc.Owners, doc.OwnersAmbiguous = c.ResolveOwners(doc.Owners)
 	return doc, true
+}
+
+// ResolveOwners maps the owner words read out of a filename onto the vault's
+// configured people, returning the resolved display names and whether the
+// reading is ambiguous.
+//
+// It exists for one configuration: a vault whose owner_groups.separator_filename
+// equals its filename.word_separator. There, "Alex-Rao" splits into the two
+// owner words "Alex" and "Rao", and only the people list can say that those two
+// words are one person. The default configuration separates the two characters
+// precisely so this never arises, but a user may still choose otherwise and
+// their vault must behave.
+//
+// The rules, in order:
+//
+//   - Every word already naming a configured person is that set of people.
+//   - A vault with no people list, or one whose separators differ, is taken
+//     literally: the split is unambiguous, and Kagaz never invents an owner.
+//   - Otherwise the words are re-joined and matched greedily, longest spelling
+//     first, so "Alex-Rao" wins over a hypothetical "Alex". A partial match
+//     falls back to the words as written, and reports ambiguity, rather than
+//     resolving half a filename.
+func (c *Conventions) ResolveOwners(words []string) ([]string, bool) {
+	if len(words) == 0 {
+		return words, false
+	}
+	people := c.orderedPeople()
+	if len(people) == 0 {
+		return words, false
+	}
+
+	// Every word already spells a configured person: nothing to resolve.
+	resolved := make([]string, 0, len(words))
+	for _, w := range words {
+		name, ok := c.personByWord(people, c.Word(w))
+		if !ok {
+			resolved = nil
+			break
+		}
+		resolved = append(resolved, name)
+	}
+	if resolved != nil {
+		return resolved, false
+	}
+
+	sep := c.cfg.OwnerGroup.SeparatorFilename
+	if sep == "" || sep != c.cfg.Filename.WordSeparator {
+		// The split is trustworthy; the filename simply names someone who is
+		// not in vault.yaml. That is a fact about the vault, not an ambiguity.
+		return words, false
+	}
+
+	joined := make([]string, 0, len(words))
+	for _, w := range words {
+		joined = append(joined, c.Word(w))
+	}
+	token := strings.Join(joined, sep)
+
+	var out []string
+	for rest := token; rest != ""; {
+		matched := false
+		for _, p := range people {
+			if len(rest) < len(p.word) || !strings.EqualFold(rest[:len(p.word)], p.word) {
+				continue
+			}
+			tail := rest[len(p.word):]
+			if tail != "" && !strings.HasPrefix(tail, sep) {
+				continue // a longer word that merely starts with this person's
+			}
+			out = append(out, p.name)
+			rest = strings.TrimPrefix(tail, sep)
+			matched = true
+			break
+		}
+		if !matched {
+			return words, true
+		}
+	}
+	if len(out) == 0 {
+		return words, true
+	}
+	return out, false
+}
+
+// ownerWord pairs a person's display name with its filename spelling.
+type ownerWord struct{ word, name string }
+
+// orderedPeople returns the vault's people by descending spelling length, so a
+// greedy match prefers the longest name that fits.
+func (c *Conventions) orderedPeople() []ownerWord {
+	out := make([]ownerWord, 0, len(c.cfg.People))
+	for _, p := range c.cfg.People {
+		if w := c.Word(p.Name); w != "" {
+			out = append(out, ownerWord{word: w, name: p.Name})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].word) != len(out[j].word) {
+			return len(out[i].word) > len(out[j].word)
+		}
+		return out[i].word < out[j].word
+	})
+	return out
+}
+
+// personByWord resolves one filename spelling to a display name.
+func (c *Conventions) personByWord(people []ownerWord, word string) (string, bool) {
+	for _, p := range people {
+		if strings.EqualFold(p.word, word) {
+			return p.name, true
+		}
+	}
+	return "", false
 }
 
 func (c *Conventions) assign(doc *Doc, field, value string) {

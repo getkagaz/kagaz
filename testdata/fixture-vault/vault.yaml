@@ -17,7 +17,7 @@ people:
 
 owner_groups:
   separator_folder: "+"
-  separator_filename: "-"
+  separator_filename: "+"
   order: alphabetical
 
 filename:

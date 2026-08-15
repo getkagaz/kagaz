@@ -220,6 +220,17 @@ func TestSpotlightDoesNotChangeResults(t *testing.T) {
 			abs(fixtureDocs[3]), abs(fixtureDocs[4]),
 			abs("Financial/Alex-Rao/FY 2026/not-a-real-file.txt"),
 		}},
+		// The ordinary stale-index case: Spotlight names some of the vault but
+		// not the file that actually matches. This is the case that used to
+		// lose a result, and it is why the candidate set no longer decides
+		// which files are considered.
+		"under-reporting": {ok: true, paths: []string{
+			abs(fixtureDocs[4]),
+		}},
+		// An index that knows only files which match nothing in these queries.
+		"under-reporting hard": {ok: true, paths: []string{
+			abs(fixtureDocs[3]),
+		}},
 		// Spotlight present but answering nothing: indistinguishable from an
 		// index that has not caught up, so Kagaz must fall back to the walk.
 		"empty answer": {ok: true},
@@ -475,5 +486,162 @@ func TestCancelledContextStopsScan(t *testing.T) {
 	cancel()
 	if _, err := s.Scan(ctx); err == nil {
 		t.Fatal("want the cancellation to surface")
+	}
+}
+
+// TestSidecarOnlyMatchSurvivesAnUnderReportingSpotlight is the regression test
+// for the bug this round fixed: "INV-2026-0417" appears only inside the
+// invoice's sidecar text, and a Spotlight that returns a non-empty but
+// incomplete list must not be able to hide it.
+func TestSidecarOnlyMatchSurvivesAnUnderReportingSpotlight(t *testing.T) {
+	s := newFixtureSearcher(t)
+	root := s.Config().VaultRoot
+	s.Spotlight = &fakeSpotlight{ok: true, paths: []string{
+		filepath.Join(root, filepath.FromSlash(fixtureDocs[4])),
+	}}
+	got, err := s.Find(context.Background(), Query{Text: "INV-2026-0417"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(relPaths(got), []string{fixtureDocs[0]}) {
+		t.Errorf("got %q, want the Acme invoice", relPaths(got))
+	}
+}
+
+// TestUnfiledDocumentsAreVisible is F4: a file outside every category folder is
+// still found, still counted and still lintable. Making it invisible is the
+// worst outcome for a tool whose job is keeping the vault honest.
+func TestUnfiledDocumentsAreVisible(t *testing.T) {
+	cfg := tempVault(t)
+	mk := func(rel string) {
+		p := filepath.Join(cfg.VaultRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("dropped-at-the-root.pdf")
+	mk("Unsorted/holiday-scan.pdf")
+	mk("Financial/Alex-Rao/Invoice_Alex-Rao_Acme_2026.txt")
+	// Vault plumbing at the root stays invisible.
+	mk("INDEX.md")
+	mk("AGENTS.md")
+	mk("README.md")
+	mk("vault.log")
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := s.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"Financial/Alex-Rao/Invoice_Alex-Rao_Acme_2026.txt",
+		"Unsorted/holiday-scan.pdf",
+		"dropped-at-the-root.pdf",
+	}
+	if !reflect.DeepEqual(relPaths(tree.Documents), want) {
+		t.Fatalf("got %q want %q", relPaths(tree.Documents), want)
+	}
+	for _, d := range tree.Documents {
+		wantCategory := ""
+		if d.RelPath == want[0] {
+			wantCategory = "financial"
+		}
+		if d.Category != wantCategory {
+			t.Errorf("%s: category = %q, want %q", d.RelPath, d.Category, wantCategory)
+		}
+	}
+	// A README inside a category folder is a document like any other; only the
+	// vault root's own meta-documents are plumbing.
+	mk("Financial/README.md")
+	tree, err = s.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Documents) != 4 {
+		t.Errorf("a README inside a category should be a document: %q", relPaths(tree.Documents))
+	}
+}
+
+// TestNestedCategoriesAreAttributedToTheMostSpecific is F8: with one category
+// folder inside another, files under the inner one belong to the inner
+// category, and neither category's folder is walked twice.
+func TestNestedCategoriesAreAttributedToTheMostSpecific(t *testing.T) {
+	dir := t.TempDir()
+	yaml := "version: 1\nvault_root: .\npeople:\n  - name: Alex Rao\n" +
+		"structure:\n  financial:\n    path: Financial\n    layout: \"{Owner}\"\n" +
+		"  tax:\n    path: Financial/Tax\n    layout: \"{Owner}\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "vault.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadFile(filepath.Join(dir, "vault.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"Financial/Alex-Rao/Invoice_Alex-Rao_Acme_2026.txt",
+		"Financial/Tax/Alex-Rao/Tax-Return_Alex-Rao_HMRC_2026.txt",
+	} {
+		p := filepath.Join(cfg.VaultRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := s.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Documents) != 2 {
+		t.Fatalf("each file must be visited exactly once, got %q", relPaths(tree.Documents))
+	}
+	got := map[string]string{}
+	for _, d := range tree.Documents {
+		got[d.RelPath] = d.Category
+	}
+	want := map[string]string{
+		"Financial/Alex-Rao/Invoice_Alex-Rao_Acme_2026.txt":        "financial",
+		"Financial/Tax/Alex-Rao/Tax-Return_Alex-Rao_HMRC_2026.txt": "tax",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("categories = %v, want %v", got, want)
+	}
+}
+
+// TestStagingFolderIsSkippedByItsConfiguredPath is F7: the staging and manifest
+// folders are recognised through cfg.StagingDir()/cfg.ManifestDir() rather than
+// through a string literal, so a future change to either path keeps working.
+// (Neither is configurable in vault.yaml today, which is why this test can only
+// assert the behaviour, not vary the name.)
+func TestStagingFolderIsSkippedByItsConfiguredPath(t *testing.T) {
+	cfg := tempVault(t)
+	staged := filepath.Join(cfg.StagingDir(), "20260101-000000", "superseded.txt")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := s.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Documents) != 0 {
+		t.Errorf("staged files are not documents: %q", relPaths(tree.Documents))
 	}
 }
