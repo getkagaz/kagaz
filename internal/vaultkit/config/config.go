@@ -1,0 +1,563 @@
+// Package config parses and validates vault.yaml, the single authored source of
+// truth for a Kagaz vault. Nothing in Kagaz hardcodes conventions: folder names,
+// filename grammar, fiscal-year math, tag vocabulary and the doctype catalog all
+// resolve from here.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// FileName is the conventional name of the vault configuration file.
+const FileName = "vault.yaml"
+
+// SchemaVersion is the highest vault.yaml `version:` this build understands.
+const SchemaVersion = 1
+
+// Config is a fully parsed, defaulted and validated vault.yaml.
+type Config struct {
+	Version    int          `yaml:"version"`
+	VaultRoot  string       `yaml:"vault_root"`
+	FiscalYear FiscalYear   `yaml:"fiscal_year"`
+	People     []Person     `yaml:"people"`
+	OwnerGroup OwnerGroup   `yaml:"owner_groups"`
+	Filename   Filename     `yaml:"filename"`
+	Structure  Structure    `yaml:"structure"`
+	Tags       Tags         `yaml:"tags"`
+	OCR        OCR          `yaml:"ocr"`
+	Classify   Classify     `yaml:"classify"`
+	Encrypted  Encrypted    `yaml:"encrypted_docs"`
+	Lint       Lint         `yaml:"lint"`
+	Confidence Confidential `yaml:"confidential"`
+	DocTypes   []DocType    `yaml:"doctypes"`
+
+	// Path is the absolute path vault.yaml was loaded from. Not serialized.
+	Path string `yaml:"-"`
+}
+
+// FiscalYear describes how calendar dates map onto fiscal periods. A start month
+// of 1 means the fiscal year is the calendar year, which is the global default;
+// 4 (India, Japan, UK-ish), 7 (Australia) and 10 (US federal) are the common
+// split-year alternatives.
+type FiscalYear struct {
+	StartMonth  int    `yaml:"start_month"`
+	LabelFormat string `yaml:"label_format"`
+}
+
+// Person is a vault owner. Name is the display form used in filenames and
+// folders; Tag is the lowercase slug used for Finder tags and CLI filters.
+type Person struct {
+	Name string `yaml:"name"`
+	Tag  string `yaml:"tag"`
+}
+
+// OwnerGroup controls how documents belonging to several people are addressed.
+type OwnerGroup struct {
+	SeparatorFolder   string `yaml:"separator_folder"`
+	SeparatorFilename string `yaml:"separator_filename"`
+	Order             string `yaml:"order"`
+}
+
+// Filename is the filename grammar. Pattern uses {Field} placeholders with
+// optional [...] segments, e.g. "{DocType}_{Names}_{Identifier}[_{Year}]".
+type Filename struct {
+	Pattern       string `yaml:"pattern"`
+	WordSeparator string `yaml:"word_separator"`
+	FieldSep      string `yaml:"field_separator"`
+}
+
+// Structure maps doctype categories onto folders beneath the vault root.
+type Structure map[string]Category
+
+// Category is one top-level area of the vault.
+//
+// Layout is a slash-separated template of {Owner} and {FY} segments describing
+// the subtree beneath Path. Shared, when set, names the folder used instead of
+// {Owner} for documents owned by more than one person.
+type Category struct {
+	Path   string `yaml:"path"`
+	Shared string `yaml:"shared,omitempty"`
+	Layout string `yaml:"layout,omitempty"`
+}
+
+// Tags is the controlled vocabulary. Anything outside it is a lint violation,
+// which is what keeps Finder tags searchable rather than a free-text swamp.
+type Tags struct {
+	Companies   []string `yaml:"companies"`
+	Areas       []string `yaml:"areas"`
+	FiscalYears []string `yaml:"fiscal_years"`
+	Lifecycle   []string `yaml:"lifecycle"`
+}
+
+// OCR configures text extraction.
+type OCR struct {
+	VisionLanguages []string  `yaml:"vision_languages"`
+	Ollama          OCROllama `yaml:"ollama"`
+}
+
+// OCROllama is the opt-in Ollama OCR runner. Enabled is a tri-state string:
+// "auto", "true" or "false".
+type OCROllama struct {
+	Enabled  string `yaml:"enabled"`
+	Model    string `yaml:"model"`
+	Endpoint string `yaml:"endpoint"`
+}
+
+// Classify selects and tunes the semantic classifier backend.
+type Classify struct {
+	Engine        string  `yaml:"engine"`
+	Model         string  `yaml:"model"`
+	Endpoint      string  `yaml:"endpoint"`
+	MinConfidence float64 `yaml:"min_confidence"`
+}
+
+// Encrypted controls handling of password-protected documents.
+type Encrypted struct {
+	KeepEncrypted bool   `yaml:"keep_encrypted"`
+	PasswordStore string `yaml:"password_store"`
+}
+
+// Lint enables individual convention checks.
+type Lint struct {
+	RequireLifecycleTag         bool     `yaml:"require_lifecycle_tag"`
+	SingleActivePerDocTypePerPerson []string `yaml:"single_active_per_doctype_per_person"`
+	ForbidPasswordsInFilenames  bool     `yaml:"forbid_passwords_in_filenames"`
+}
+
+// Confidential governs the external-send gate.
+type Confidential struct {
+	RequireConfirmationOnResolveForSend bool   `yaml:"require_confirmation_on_resolve_for_send"`
+	AuditLog                            string `yaml:"audit_log"`
+}
+
+// DocType is a per-vault extension or override of the built-in catalog.
+type DocType struct {
+	Name     string        `yaml:"name"`
+	Category string        `yaml:"category"`
+	Match    DocTypeMatch  `yaml:"match"`
+	Extract  map[string]string `yaml:"extract"`
+}
+
+// DocTypeMatch holds the high-precision rules used by the offline fallback
+// classifier. Keywords match on word boundaries; Patterns are Go regexps.
+type DocTypeMatch struct {
+	Keywords []string `yaml:"keywords"`
+	Patterns []string `yaml:"patterns"`
+}
+
+// Valid classifier engines.
+const (
+	EngineAuto   = "auto"
+	EngineApple  = "apple"
+	EngineMLX    = "mlx"
+	EngineOllama = "ollama"
+	EngineRules  = "rules"
+)
+
+var validEngines = []string{EngineAuto, EngineApple, EngineMLX, EngineOllama, EngineRules}
+
+// DefaultMLXModel is the pinned MLX weights repository. It is a text LLM on
+// purpose: vision-language loaders take a different MLX code path.
+const DefaultMLXModel = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+
+// ErrNotFound is returned by Find and Load when no vault.yaml is present.
+var ErrNotFound = errors.New("no vault.yaml found")
+
+// Find walks up from start looking for a vault.yaml, returning its path. An
+// empty start means the current working directory.
+func Find(start string) (string, error) {
+	if start == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		start = wd
+	}
+	dir, err := filepath.Abs(ExpandHome(start))
+	if err != nil {
+		return "", err
+	}
+	// A directly-named vault.yaml is accepted as-is.
+	if filepath.Base(dir) == FileName {
+		if _, err := os.Stat(dir); err == nil {
+			return dir, nil
+		}
+	}
+	for {
+		candidate := filepath.Join(dir, FileName)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", ErrNotFound
+		}
+		dir = parent
+	}
+}
+
+// Load finds, parses, defaults and validates the vault config for start.
+func Load(start string) (*Config, error) {
+	path, err := Find(start)
+	if err != nil {
+		return nil, err
+	}
+	return LoadFile(path)
+}
+
+// LoadFile parses, defaults and validates a specific vault.yaml.
+func LoadFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	cfg.Path = path
+	// A relative vault_root resolves against the directory holding vault.yaml,
+	// so a vault stays portable when moved wholesale.
+	if !filepath.IsAbs(cfg.VaultRoot) {
+		cfg.VaultRoot = filepath.Join(filepath.Dir(path), cfg.VaultRoot)
+	}
+	cfg.VaultRoot = filepath.Clean(cfg.VaultRoot)
+	return cfg, nil
+}
+
+// Parse decodes YAML into a Config, applies defaults and validates it.
+func Parse(data []byte) (*Config, error) {
+	var cfg Config
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("parse: %w", err)
+	}
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// ExpandHome replaces a leading ~ with the user's home directory.
+func ExpandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p
+		}
+		return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+	}
+	return p
+}
+
+func (c *Config) applyDefaults() {
+	if c.Version == 0 {
+		c.Version = SchemaVersion
+	}
+	if c.VaultRoot == "" {
+		c.VaultRoot = "~/Documents"
+	}
+	c.VaultRoot = ExpandHome(c.VaultRoot)
+
+	if c.FiscalYear.StartMonth == 0 {
+		c.FiscalYear.StartMonth = 1
+	}
+	if c.FiscalYear.LabelFormat == "" {
+		if c.FiscalYear.StartMonth == 1 {
+			c.FiscalYear.LabelFormat = "FY {yyyy1}"
+		} else {
+			c.FiscalYear.LabelFormat = "FY {yy1}-{yy2}"
+		}
+	}
+
+	if c.OwnerGroup.SeparatorFolder == "" {
+		c.OwnerGroup.SeparatorFolder = "+"
+	}
+	if c.OwnerGroup.SeparatorFilename == "" {
+		c.OwnerGroup.SeparatorFilename = "-"
+	}
+	if c.OwnerGroup.Order == "" {
+		c.OwnerGroup.Order = "alphabetical"
+	}
+
+	if c.Filename.Pattern == "" {
+		c.Filename.Pattern = "{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]"
+	}
+	if c.Filename.WordSeparator == "" {
+		c.Filename.WordSeparator = "-"
+	}
+	if c.Filename.FieldSep == "" {
+		c.Filename.FieldSep = "_"
+	}
+
+	if len(c.Structure) == 0 {
+		c.Structure = DefaultStructure()
+	}
+	for name, cat := range c.Structure {
+		if cat.Path == "" {
+			cat.Path = strings.Title(name) //nolint:staticcheck // ASCII category names only
+		}
+		if cat.Layout == "" {
+			cat.Layout = defaultLayout(name)
+		}
+		c.Structure[name] = cat
+	}
+
+	if len(c.Tags.Lifecycle) == 0 {
+		c.Tags.Lifecycle = DefaultLifecycleTags()
+	}
+
+	if len(c.OCR.VisionLanguages) == 0 {
+		c.OCR.VisionLanguages = []string{"en-US"}
+	}
+	if c.OCR.Ollama.Enabled == "" {
+		c.OCR.Ollama.Enabled = "auto"
+	}
+	if c.OCR.Ollama.Endpoint == "" {
+		c.OCR.Ollama.Endpoint = "http://localhost:11434"
+	}
+
+	if c.Classify.Engine == "" {
+		c.Classify.Engine = EngineAuto
+	}
+	if c.Classify.Model == "" {
+		c.Classify.Model = DefaultMLXModel
+	}
+	if c.Classify.Endpoint == "" {
+		c.Classify.Endpoint = "http://localhost:11434"
+	}
+	if c.Classify.MinConfidence == 0 {
+		c.Classify.MinConfidence = 0.5
+	}
+
+	if c.Encrypted.PasswordStore == "" {
+		c.Encrypted.PasswordStore = "keychain"
+	}
+	if c.Confidence.AuditLog == "" {
+		c.Confidence.AuditLog = "vault.log"
+	}
+
+	for i, p := range c.People {
+		if p.Tag == "" {
+			c.People[i].Tag = Slug(p.Name)
+		}
+	}
+}
+
+// DefaultLifecycleTags is the built-in lifecycle vocabulary.
+func DefaultLifecycleTags() []string {
+	return []string{"active", "superseded", "encrypted", "confidential", "to-action", "dont-touch"}
+}
+
+// DefaultStructure is the global-first category-to-folder mapping used when
+// vault.yaml does not specify one.
+func DefaultStructure() Structure {
+	s := Structure{
+		"personal":  {Path: "Personal"},
+		"company":   {Path: "Company"},
+		"financial": {Path: "Financial"},
+		"travel":    {Path: "Travel"},
+		"identity":  {Path: "Identity", Shared: "_Shared"},
+		"insurance": {Path: "Insurance"},
+		"medical":   {Path: "Medical"},
+		"legal":     {Path: "Legal"},
+		"property":  {Path: "Property"},
+		"vehicles":  {Path: "Vehicles"},
+		"utility":   {Path: "Utilities"},
+	}
+	for name, cat := range s {
+		cat.Layout = defaultLayout(name)
+		s[name] = cat
+	}
+	return s
+}
+
+// defaultLayout partitions the categories that accumulate one document per
+// period by fiscal year, and leaves the rest as a flat per-owner folder.
+func defaultLayout(category string) string {
+	switch category {
+	case "financial", "company", "utility":
+		return "{Owner}/{FY}"
+	default:
+		return "{Owner}"
+	}
+}
+
+// Validate reports the first structural problem with the config.
+func (c *Config) Validate() error {
+	if c.Version > SchemaVersion {
+		return fmt.Errorf("vault.yaml version %d is newer than this build supports (%d); upgrade kagaz", c.Version, SchemaVersion)
+	}
+	if c.FiscalYear.StartMonth < 1 || c.FiscalYear.StartMonth > 12 {
+		return fmt.Errorf("fiscal_year.start_month must be 1-12, got %d", c.FiscalYear.StartMonth)
+	}
+	if !strings.Contains(c.FiscalYear.LabelFormat, "{") {
+		return fmt.Errorf("fiscal_year.label_format %q contains no placeholder", c.FiscalYear.LabelFormat)
+	}
+	if c.Filename.WordSeparator == c.Filename.FieldSep {
+		return errors.New("filename.word_separator and filename.field_separator must differ")
+	}
+	if !strings.Contains(c.Filename.Pattern, "{DocType}") {
+		return errors.New("filename.pattern must contain {DocType}")
+	}
+
+	seenTag := map[string]string{}
+	for _, p := range c.People {
+		if p.Name == "" {
+			return errors.New("people: entry with empty name")
+		}
+		if prev, dup := seenTag[p.Tag]; dup {
+			return fmt.Errorf("people: %q and %q share tag %q", prev, p.Name, p.Tag)
+		}
+		seenTag[p.Tag] = p.Name
+	}
+
+	if len(c.Structure) == 0 {
+		return errors.New("structure: at least one category is required")
+	}
+	for name, cat := range c.Structure {
+		if cat.Path == "" {
+			return fmt.Errorf("structure.%s.path is empty", name)
+		}
+		if filepath.IsAbs(cat.Path) || strings.Contains(cat.Path, "..") {
+			return fmt.Errorf("structure.%s.path %q must be a relative path inside the vault", name, cat.Path)
+		}
+		for _, seg := range strings.Split(cat.Layout, "/") {
+			switch seg {
+			case "{Owner}", "{FY}", "":
+			default:
+				return fmt.Errorf("structure.%s.layout: unknown segment %q (want {Owner} or {FY})", name, seg)
+			}
+		}
+	}
+
+	if !contains(validEngines, c.Classify.Engine) {
+		return fmt.Errorf("classify.engine %q must be one of %s", c.Classify.Engine, strings.Join(validEngines, ", "))
+	}
+	if c.Classify.MinConfidence < 0 || c.Classify.MinConfidence > 1 {
+		return fmt.Errorf("classify.min_confidence must be 0-1, got %v", c.Classify.MinConfidence)
+	}
+	if err := requireLocalhost(c.Classify.Endpoint); err != nil {
+		return fmt.Errorf("classify.endpoint: %w", err)
+	}
+	if err := requireLocalhost(c.OCR.Ollama.Endpoint); err != nil {
+		return fmt.Errorf("ocr.ollama.endpoint: %w", err)
+	}
+	switch c.OCR.Ollama.Enabled {
+	case "auto", "true", "false":
+	default:
+		return fmt.Errorf("ocr.ollama.enabled must be auto, true or false, got %q", c.OCR.Ollama.Enabled)
+	}
+
+	for _, dt := range c.DocTypes {
+		if dt.Name == "" {
+			return errors.New("doctypes: entry with empty name")
+		}
+		if dt.Category == "" {
+			return fmt.Errorf("doctypes.%s: category is required", dt.Name)
+		}
+		if _, ok := c.Structure[dt.Category]; !ok {
+			return fmt.Errorf("doctypes.%s: category %q is not defined in structure", dt.Name, dt.Category)
+		}
+	}
+	return nil
+}
+
+// requireLocalhost enforces safety invariant #1 at config-parse time: a remote
+// inference endpoint can never be configured, let alone dialled.
+func requireLocalhost(endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	host := endpoint
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?#"); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	if i := strings.LastIndex(host, ":"); i >= 0 && !strings.Contains(host[i:], "]") {
+		host = host[:i]
+	}
+	host = strings.Trim(host, "[]")
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return nil
+	}
+	return fmt.Errorf("%q is not localhost; Kagaz never sends document text off the machine", endpoint)
+}
+
+// Person resolves a person by name or tag, case-insensitively.
+func (c *Config) Person(nameOrTag string) (Person, bool) {
+	want := strings.ToLower(nameOrTag)
+	for _, p := range c.People {
+		if strings.ToLower(p.Name) == want || strings.ToLower(p.Tag) == want {
+			return p, true
+		}
+	}
+	return Person{}, false
+}
+
+// CategoryFor returns the category definition for a category name.
+func (c *Config) CategoryFor(name string) (Category, bool) {
+	cat, ok := c.Structure[name]
+	return cat, ok
+}
+
+// AuditLogPath is the absolute path of the append-only audit log.
+func (c *Config) AuditLogPath() string {
+	if filepath.IsAbs(c.Confidence.AuditLog) {
+		return c.Confidence.AuditLog
+	}
+	return filepath.Join(c.VaultRoot, c.Confidence.AuditLog)
+}
+
+// ManifestDir is where operation manifests are written.
+func (c *Config) ManifestDir() string {
+	return filepath.Join(c.VaultRoot, "manifests")
+}
+
+// StagingDir is the never-delete staging area. Kagaz renames into it; the user
+// empties it from Finder.
+func (c *Config) StagingDir() string {
+	return filepath.Join(c.VaultRoot, "_To-Delete-After-Verification")
+}
+
+// Slug lowercases a string and collapses non-alphanumerics into single dashes.
+func Slug(s string) string {
+	var b strings.Builder
+	lastDash := true // suppress a leading dash
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}

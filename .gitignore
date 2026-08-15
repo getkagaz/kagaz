@@ -1,0 +1,18 @@
+# Editors / OS
+.DS_Store
+*.swp
+
+# Build output
+/kagaz
+/kagaz-mcp
+/bin/
+/dist/
+.build/
+*.o
+
+# Agent scratch (not part of the project)
+.superpowers/
+
+# Swift
+.swiftpm/
+Package.resolved
