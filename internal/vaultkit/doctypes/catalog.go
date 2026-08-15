@@ -46,8 +46,8 @@ type builtin struct {
 // Shared extraction templates. Keeping them in one place means a fix to the
 // date or amount regex lands everywhere at once.
 const (
-	reAmount = `(?i)(?:total|amount\s+due|grand\s+total|balance\s+due|net\s+payable|amount\s+payable)[^\d\-]{0,20}([0-9][0-9,]*(?:\.[0-9]{1,2})?)`
-	reDate   = `(?i)(?:date(?:d)?|issued(?:\s+on)?|invoice\s+date)[:\s]{1,4}([0-9]{1,4}[-/. ][0-9]{1,2}[-/. ][0-9]{2,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})`
+	reAmount  = `(?i)(?:total|amount\s+due|grand\s+total|balance\s+due|net\s+payable|amount\s+payable)[^\d\-]{0,20}([0-9][0-9,]*(?:\.[0-9]{1,2})?)`
+	reDate    = `(?i)(?:date(?:d)?|issued(?:\s+on)?|invoice\s+date)[:\s]{1,4}([0-9]{1,4}[-/. ][0-9]{1,2}[-/. ][0-9]{2,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})`
 	reDueDate = `(?i)due\s+date[:\s]{1,4}([0-9]{1,4}[-/. ][0-9]{1,2}[-/. ][0-9]{2,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})`
 )
 

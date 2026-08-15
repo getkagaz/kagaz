@@ -125,9 +125,9 @@ type Encrypted struct {
 
 // Lint enables individual convention checks.
 type Lint struct {
-	RequireLifecycleTag         bool     `yaml:"require_lifecycle_tag"`
+	RequireLifecycleTag             bool     `yaml:"require_lifecycle_tag"`
 	SingleActivePerDocTypePerPerson []string `yaml:"single_active_per_doctype_per_person"`
-	ForbidPasswordsInFilenames  bool     `yaml:"forbid_passwords_in_filenames"`
+	ForbidPasswordsInFilenames      bool     `yaml:"forbid_passwords_in_filenames"`
 }
 
 // Confidential governs the external-send gate.
@@ -138,9 +138,9 @@ type Confidential struct {
 
 // DocType is a per-vault extension or override of the built-in catalog.
 type DocType struct {
-	Name     string        `yaml:"name"`
-	Category string        `yaml:"category"`
-	Match    DocTypeMatch  `yaml:"match"`
+	Name     string            `yaml:"name"`
+	Category string            `yaml:"category"`
+	Match    DocTypeMatch      `yaml:"match"`
 	Extract  map[string]string `yaml:"extract"`
 }
 

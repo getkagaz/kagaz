@@ -1,0 +1,8 @@
+{
+  "contract": 2,
+  "engine": "vision",
+  "confidence": 0.94,
+  "regions": [
+    {"text": "ACME LTD", "quad": [0.10, 0.90, 0.30, 0.05], "confidence": 0.99, "page": 1}
+  ]
+}
