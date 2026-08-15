@@ -37,7 +37,6 @@ class Kagaz < Formula
 
   def install
     ENV["GOTOOLCHAIN"] = "local"
-    ENV["GOFLAGS"] = "-mod=mod"
 
     ldflags = "-s -w -X main.version=#{version}"
     system "go", "build", *std_go_args(ldflags: ldflags, output: bin/"kagaz"), "./cmd/kagaz"
@@ -94,6 +93,8 @@ class Kagaz < Formula
     assert_equal 1, probe["contract"]
     assert_equal "apple", probe["engine"]
 
-    assert_path_exists bin/"kagaz-mcp"
+    # Actually run kagaz-mcp: merely asserting the file exists would pass for a
+    # zero-byte file.
+    assert_match version.to_s, shell_output("#{bin}/kagaz-mcp --version")
   end
 end

@@ -31,10 +31,13 @@ permissions:
   contents: read
 
 concurrency:
-  # Keyed on the resolved ref so a tag push and a hand-published release for
-  # the same version queue instead of racing. Never cancel: a half-finished
-  # bottle upload is worse than a duplicate run.
-  group: release-${{ github.event.release.tag_name || github.ref_name || inputs.tag }}
+  # Keyed on the version so a tag push, a hand-published release and a manual
+  # dispatch for the same version queue instead of racing. `github.ref_name` is
+  # listed last and after `inputs.tag`: on a workflow_dispatch it is the branch
+  # (`main`), which is truthy and would otherwise swallow the real tag and give
+  # every dispatch the same useless `release-main` group.
+  # Never cancel: a half-finished bottle upload is worse than a duplicate run.
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -64,10 +67,12 @@ jobs:
             *) echo "::error::unexpected event $EVENT_NAME"; exit 1 ;;
           esac
 
-          case "$tag" in
-            v[0-9]*) ;;
-            *) echo "::error::resolved tag '$tag' is not a v* release tag"; exit 1 ;;
-          esac
+          # A real regex, not a glob: `case v[0-9]*` would happily accept
+          # `v1;whatever`, which is not what a reader assumes it rejects.
+          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::resolved tag '$tag' is not a vMAJOR.MINOR.PATCH release tag"
+            exit 1
+          fi
 
           printf 'tag=%s\n' "$tag" >>"$GITHUB_OUTPUT"
           printf 'version=%s\n' "${tag#v}" >>"$GITHUB_OUTPUT"
@@ -93,6 +98,13 @@ jobs:
         with:
           ref: ${{ needs.meta.outputs.tag }}
           persist-credentials: false
+
+      # HOMEBREW_NO_INSTALL_FROM_API=1 (set above, and required for bottling)
+      # means Homebrew needs the homebrew/core tap on disk before it can
+      # resolve poppler. Do that explicitly so a slow or failing clone is a
+      # legible step failure rather than a mysterious hang inside `brew install`.
+      - name: Tap homebrew/core
+        run: brew tap --force homebrew/core
 
       - name: Point the formulae at this release's tarball
         run: |
@@ -141,6 +153,36 @@ jobs:
           brew bottle --merge --write --no-commit ./*.bottle.json
           cp "$TAP/Formula/kagaz.rb" ./kagaz.rb
           printf 'bottled=true\n' >>"$GITHUB_OUTPUT"
+
+      - name: Ensure the release object exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # On a v* tag push this job and tag-release.yml start at the same
+          # instant with no ordering between them. The bottle build usually
+          # takes far longer, so the release usually exists by now — but if
+          # release creation was delayed or failed, the upload below would die
+          # after a full bottle build and the bottles would be lost.
+          #
+          # Wait briefly for tag-release.yml, then create the release ourselves
+          # rather than failing. Every branch here logs which one it took, so a
+          # missing tag-release run is visible instead of silently papered over.
+          for attempt in 1 2 3 4 5 6; do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release $TAG exists (attempt $attempt)."
+              exit 0
+            fi
+            echo "Release $TAG not present yet; waiting 10s (attempt $attempt/6)."
+            sleep 10
+          done
+
+          echo "::warning::Release $TAG did not appear after 60s; tag-release.yml may have failed or been skipped. Creating it here so the bottles are not lost."
+          prerelease=""
+          case "$TAG" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag $prerelease
 
       - name: Upload the bottle to the release
         env:
@@ -206,13 +248,33 @@ jobs:
           cd tap
           git config user.name "kagaz-release[bot]"
           git config user.email "kagaz-release@users.noreply.github.com"
-          if git diff --quiet; then
-            echo "Tap already up to date for $TAG."
+
+          # Stage FIRST, then ask git what is actually staged. `git diff --quiet`
+          # on the worktree cannot see untracked files, so on the very first
+          # release — when the tap is empty and both formulae are new — it
+          # exits 0 and this job would report success having pushed nothing,
+          # leaving `brew install getkagaz/kagaz/kagaz` broken for every user
+          # while all workflows showed green. The same trap re-fires whenever a
+          # formula file is newly added to an existing tap.
+          #
+          # `git status --porcelain` rather than `git diff --cached --quiet`:
+          # both work, but the first run clones a tap that may have no commits
+          # at all, and `status` needs no HEAD to compare against.
+          git add Formula/kagaz.rb Formula/kagaz-mlx.rb
+          staged="$(git status --porcelain -- Formula/kagaz.rb Formula/kagaz-mlx.rb)"
+          if [ -z "$staged" ]; then
+            echo "Tap already contains these exact formulae for ${TAG}; nothing to push."
             exit 0
           fi
-          git add Formula/kagaz.rb Formula/kagaz-mlx.rb
+
+          echo "Staged for the tap:"
+          echo "$staged"
           git commit -m "kagaz ${TAG}"
-          git push
+          # `git push` alone fails on a freshly cloned empty repo (no upstream).
+          git push origin HEAD
+
+          echo "Pushed to getkagaz/homebrew-kagaz for ${TAG}:"
+          git show --stat --oneline HEAD | sed 's/^/  /'
 
       - name: Summary
         env:

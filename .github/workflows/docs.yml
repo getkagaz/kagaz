@@ -9,6 +9,12 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/docs.yml"
+  # Build-only on PRs, so a docs change that breaks the Jekyll build is caught
+  # in review rather than after merge on the deploy path.
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -16,9 +22,10 @@ permissions:
 
 concurrency:
   # One deployment at a time; never cancel a running one, or Pages can be left
-  # serving a half-published build.
-  group: pages
-  cancel-in-progress: false
+  # serving a half-published build. PR builds get their own per-ref group so a
+  # review build never queues behind (or blocks) a deploy.
+  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -27,8 +34,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Only meaningful when we are going to deploy; on a PR (forks included)
+      # this job is a build check and touches no Pages configuration.
       - name: Configure Pages
         id: pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
       # docs/_config.yml sets its own `url`/`baseurl`; leave them alone rather
@@ -40,10 +50,12 @@ jobs:
           destination: ./_site
 
       - name: Upload the built site
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write
