@@ -50,9 +50,17 @@ A document's folder is `<vault_root>/<category path>/<layout>`, where
 
 - `{Owner}` — the single owner's folder name, or the category's `shared`
   folder for a document with zero or multiple owners, or nothing when
-  neither is configured.
+  neither is configured. The owner's display name is normalized through
+  `Word()` first — the same normalization applied inside a filename field —
+  so whitespace in a person's `name` becomes `word_separator`: with the
+  default `-`, a person named "Alex Rao" gets the folder `Alex-Rao/`, never
+  `Alex Rao/`. This is deliberate: vault paths get pasted into shell
+  commands and `mdfind` queries constantly, and spaces there are a
+  permanent nuisance to quote correctly.
 - `{FY}` — the fiscal-year label for the document's year, rendered through
-  `fiscal_year.label_format`. Omitted entirely when the document has no year.
+  `fiscal_year.label_format`. This one is **not** passed through `Word()`,
+  so its own spaces (e.g. `FY 2026`) are left as-is. Omitted entirely when
+  the document has no year.
 
 The built-in categories default to `{Owner}/{FY}` for **financial, company
 and utility** documents (things that recur every fiscal period) and

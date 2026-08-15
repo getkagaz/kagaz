@@ -25,8 +25,6 @@ readme_index:
 include:
   - vault.schema.json
 
-exclude:
-  - AGENTS.template.md
 
 # Every published page's front matter supplies its own `title:`; this is
 # only a fallback for anything that slips through without one.

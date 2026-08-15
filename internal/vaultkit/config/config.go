@@ -132,8 +132,25 @@ type Lint struct {
 
 // Confidential governs the external-send gate.
 type Confidential struct {
-	RequireConfirmationOnResolveForSend bool   `yaml:"require_confirmation_on_resolve_for_send"`
+	// RequireConfirmationOnResolveForSend is a tri-state: nil means the key
+	// was absent from vault.yaml, distinct from an explicit false. A plain
+	// bool cannot make that distinction (its zero value is indistinguishable
+	// from an explicit false), which would silently force the gate to a
+	// fixed value regardless of what a user wrote. Use ConfirmationRequired
+	// to read the effective value; do not read this field directly.
+	RequireConfirmationOnResolveForSend *bool  `yaml:"require_confirmation_on_resolve_for_send"`
 	AuditLog                            string `yaml:"audit_log"`
+}
+
+// ConfirmationRequired reports the effective value of
+// require_confirmation_on_resolve_for_send: true when the key was absent
+// from vault.yaml (fail closed), or the explicit value otherwise. This is
+// the only supported way to read the setting.
+func (c *Confidential) ConfirmationRequired() bool {
+	if c.RequireConfirmationOnResolveForSend == nil {
+		return true
+	}
+	return *c.RequireConfirmationOnResolveForSend
 }
 
 // DocType is a per-vault extension or override of the built-in catalog.
@@ -344,6 +361,11 @@ func (c *Config) applyDefaults() {
 	if c.Confidence.AuditLog == "" {
 		c.Confidence.AuditLog = "vault.log"
 	}
+	// No default is set here for RequireConfirmationOnResolveForSend: it
+	// stays nil when vault.yaml omits the key, and the fail-closed "nil
+	// means true" logic lives in Confidential.ConfirmationRequired, not
+	// here, specifically so an explicit `false` in vault.yaml survives
+	// defaulting instead of being silently overwritten.
 
 	for i, p := range c.People {
 		if p.Tag == "" {

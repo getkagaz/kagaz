@@ -63,17 +63,25 @@ mechanism and the invariants; `AGENTS.md` documents *this vault*.
 - **A vault document is never deleted.** A "move" relocates the file and
   retires the source into a staging folder inside the vault that only the
   human user empties.
+- **No MCP tool executes a mutation.** The MCP surface (`find`,
+  `ingest_propose`, `tag`, `resolve_for_send`) stops at proposing —
+  `ingest_propose` returns a proposal, never a completed move. There is no
+  MCP tool that accepts and executes it. Executing an accepted proposal is
+  always a CLI call (`kagaz ingest ... --yes`), made by whatever has the
+  authority to approve it — typically a human, reading the proposal first.
+  This is deliberate friction, not a gap to be filled later.
 
 ## A minimal agent loop
 
 ```
 kagaz find --doctype invoice --person "Alex Rao" --period FY2026 --json
 kagaz ingest ~/Downloads/new-invoice.pdf --propose-only --json
-# review the proposal, then:
+# a human reviews the proposal, then approves it via the CLI:
 kagaz ingest ~/Downloads/new-invoice.pdf --yes --json
 kagaz lint --json
 ```
 
-The same sequence over MCP calls `find`, then `ingest_propose`, then (after
-the caller signals approval) whatever tool executes the accepted proposal,
-with identical JSON in and out.
+Over MCP, the first two steps are `find` and `ingest_propose`, returning the
+same JSON. The loop still ends there: MCP has no tool that executes the
+proposal `ingest_propose` returned, so completing the ingest is a CLI call
+made outside the MCP session, by whoever is authorized to approve it.

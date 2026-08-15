@@ -28,10 +28,11 @@ it.
 
 ### Swift and Xcode
 
-Swift packages (`machelper/`, `machelper-mlx/`, `app/`) need macOS and (for
+Swift packages (`machelper/`, `machelper-mlx/`) need macOS and (for
 `machelper`'s Apple Foundation Models path) full Xcode, not just Command
 Line Tools — the `@Generable` macro plugin used for guided generation ships
-only inside Xcode:
+only inside Xcode. (`app/`, the planned SwiftUI menu-bar app, is an empty
+placeholder directory as of this writing — nothing to build there yet.)
 
 ```
 cd machelper && swift build
@@ -47,7 +48,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
 ```
 
 The same applies to `swift test`, `swift build -c release`, and to
-`machelper-mlx/` and `app/`'s own builds.
+`machelper-mlx/`'s own build.
 
 ## Package layout
 

@@ -260,7 +260,7 @@
       "properties": {
         "require_confirmation_on_resolve_for_send": {
           "type": "boolean",
-          "description": "When true, resolving a confidential document for external send requires explicit confirmation. This is the confidential-resolution invariant; there is no supported way to disable the audit line itself.",
+          "description": "Optional. Governs whether resolving a confidential document for external send requires explicit confirmation. Omitting this key means confirmation IS required (fails closed) -- this is not a bool with a default, it is a genuine tri-state: an explicit `false` is honoured and genuinely disables the confirmation prompt, it is not silently overridden back to true. Only the absence of the key resolves to true. There is no way to disable the audit line itself, independent of this setting.",
           "default": true
         },
         "audit_log": {

@@ -14,5 +14,9 @@
 .superpowers/
 
 # Swift
+#
+# Package.resolved is intentionally NOT ignored: these are executable
+# packages (kagaz-machelper, kagaz-machelper-mlx), not libraries, and
+# machelper-mlx pins the MLX stack -- losing that lockfile would cost build
+# reproducibility. Commit it like any other lockfile.
 .swiftpm/
-Package.resolved

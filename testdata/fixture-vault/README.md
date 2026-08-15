@@ -17,29 +17,44 @@ categories actually used are declared, `classify.engine` is pinned to
 `rules` (no external classifier needed to exercise this fixture), and
 `ocr.ollama.enabled` is `"false"`.
 
+**Owner folder names are normalized, not literal.** `conventions.OwnerFolder`
+renders a person's display name through `Word()`, which folds whitespace
+into `word_separator` (`-` in this vault's grammar, and in
+`examples/vault.yaml`). "Alex Rao" therefore places documents under
+`Alex-Rao/`, not `Alex Rao/` — verified by walking `conventions.Path` by
+hand for every file below, not by eye. Only the `{FY}` layout segment
+(rendered from `fiscal_year.label_format`, not through `Word()`) keeps its
+space, e.g. `FY 2026/`. See
+[docs/conventions-guide.md](../../docs/conventions-guide.md#folders).
+
 ## What's here, and why
 
 | Path | Exercises |
 |---|---|
-| `Financial/Alex Rao/FY 2026/Invoice_Alex-Rao_Acme-Corp_2026.txt` | A correctly named, correctly placed document. `{Owner}/{FY}` layout for `financial`. Doctype `invoice`. |
-| `Financial/Alex Rao/FY 2026/.Invoice_Alex-Rao_Acme-Corp_2026.txt.meta.yaml` | A **correct** sidecar: `source_sha256` matches the document's actual content. The happy-path sidecar-read case. |
-| `Financial/Sam Rao/FY 2025/Receipt_Sam-Rao_Globex_2025.txt` | A second correctly named financial document, different owner and fiscal year, doctype `receipt`. |
-| `Financial/Sam Rao/FY 2025/.Receipt_Sam-Rao_Globex_2025.txt.meta.yaml` | A **deliberately stale** sidecar: its `source_sha256` does not match the document. Exercises the lint "stale sidecar" rule. Do not "fix" this file to match — that removes the fixture's purpose. |
-| `Travel/Sam Rao/Boarding-Pass_Sam-Rao_United-Airlines.txt` | A correctly named document with **no sidecar at all** — the common case (most files in a real vault have none) and a check that its absence is not itself a lint finding. `{Owner}` layout for `travel`. |
-| `Travel/Sam Rao/.Ticket_Sam-Rao_Delta-Airlines.txt.meta.yaml` | A **deliberately orphaned** sidecar: there is no `Ticket_Sam-Rao_Delta-Airlines.txt` in this directory. Exercises the lint "orphan sidecar" rule. Do not add the matching document. |
-| `Identity/Alex Rao/Passport_Alex-Rao_Passport-Office_2024.txt` | A correctly named document in a category with a configured `shared` folder (`_Shared`) that this particular document does *not* use, because it has exactly one owner. Doctype `passport`, which is also in `lint.single_active_per_doctype_per_person` in this vault's `vault.yaml`. |
-| `Financial/Alex Rao/FY 2026/old invoice notes.txt` | A **deliberately convention-violating** filename: it does not fit the `{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]` grammar at all (spaces, no recognizable fields). Exercises the lint "filename does not match the grammar" rule. It is intentionally **not** a safe `--fix` target — there are no recoverable facts in this filename to rename it correctly from, so a lint fixture needs at least one violation that must stay a permanent finding rather than be auto-repaired. |
+| `Financial/Alex-Rao/FY 2026/Invoice_Alex-Rao_Acme-Corp_2026.txt` | A correctly named, correctly placed document. `{Owner}/{FY}` layout for `financial`. Doctype `invoice`. |
+| `Financial/Alex-Rao/FY 2026/.Invoice_Alex-Rao_Acme-Corp_2026.txt.meta.yaml` | A **correct** sidecar: `source_sha256` matches the document's actual content. The happy-path sidecar-read case. |
+| `Financial/Sam-Rao/FY 2025/Receipt_Sam-Rao_Globex_2025.txt` | A second correctly named financial document, different owner and fiscal year, doctype `receipt`. |
+| `Financial/Sam-Rao/FY 2025/.Receipt_Sam-Rao_Globex_2025.txt.meta.yaml` | A **deliberately stale** sidecar: its `source_sha256` does not match the document. Exercises the lint "stale sidecar" rule. Do not "fix" this file to match — that removes the fixture's purpose. |
+| `Travel/Sam-Rao/Boarding-Pass_Sam-Rao_United-Airlines.txt` | A correctly named document with **no sidecar at all** — the common case (most files in a real vault have none) and a check that its absence is not itself a lint finding. `{Owner}` layout for `travel`. |
+| `Travel/Sam-Rao/.Ticket_Sam-Rao_Delta-Airlines.txt.meta.yaml` | A **deliberately orphaned** sidecar: there is no `Ticket_Sam-Rao_Delta-Airlines.txt` in this directory. Exercises the lint "orphan sidecar" rule. Do not add the matching document. |
+| `Identity/Alex-Rao/Passport_Alex-Rao_Passport-Office_2024.txt` | A correctly named document in a category with a configured `shared` folder (`_Shared`) that this particular document does *not* use, because it has exactly one owner. Doctype `passport`, which is also in `lint.single_active_per_doctype_per_person` in this vault's `vault.yaml`. |
+| `Financial/Alex-Rao/FY 2026/old invoice notes.txt` | A **deliberately convention-violating** filename: it does not fit the `{DocType}_{Names}_{Identifier}[_{Year}][_{Modifier}]` grammar at all (spaces, no recognizable fields). Exercises the lint "filename does not match the grammar" rule. It is intentionally **not** a safe `--fix` target — there are no recoverable facts in this filename to rename it correctly from, so a lint fixture needs at least one violation that must stay a permanent finding rather than be auto-repaired. |
+
+Four documents are correctly named and correctly placed (`Invoice_...`,
+`Receipt_...`, `Boarding-Pass_...`, `Passport_...`); one document
+(`old invoice notes.txt`) is deliberately not.
 
 ## What golden tests should expect
 
-- `kagaz find` (no filters) over this vault returns the three correctly
-  named documents plus the one intentionally malformed file (search walks
-  the tree; it doesn't require grammar conformance to find a file, only to
+- `kagaz find` (no filters) over this vault returns all **five** files under
+  the four category/owner folders above — the four correctly named
+  documents plus the one intentionally malformed file (search walks the
+  tree; it doesn't require grammar conformance to find a file, only to
   parse facts out of its name).
 - `kagaz lint` over this vault is **not** clean: it reports exactly three
   findings — the malformed filename, the stale sidecar, and the orphan
   sidecar — and nothing else. If a future change to the lint rule set adds
-  a new finding against one of the *correct* files above, that's a
+  a new finding against one of the *four correct* files above, that's a
   regression, not a fixture bug.
 - `kagaz index` regenerating `INDEX.md`/`AGENTS.md` against this tree must
   be byte-stable across runs (no timestamps in the generated body, output
@@ -50,4 +65,8 @@ categories actually used are declared, `classify.engine` is pinned to
 
 Keep it small. If a new test needs another scenario, prefer adding one more
 narrowly-scoped file over growing an existing one, and update the table
-above in the same change.
+above in the same change. If the new scenario involves a document's folder
+path, compute it from `conventions.Path`/`conventions.Dir` (or by hand,
+tracing `Word()`/`OwnerFolder()`) rather than by eye — see the F4 fix in
+`.superpowers/sdd/kagaz-build-plan/task-10-report.md` for why that check
+matters here specifically.

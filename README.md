@@ -172,10 +172,13 @@ just because a bottle exists.
 
 **Is there a menu-bar app?**
 
-Yes (`app/`), but it holds zero vault logic of its own — it shells out to
-the `kagaz` CLI with `--json`, same as anything else that talks to a vault.
-It is not yet signed, notarized, or packaged as a Cask (needs an Apple
-Developer account); see [docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md).
+One is planned, at `app/` — a SwiftUI `MenuBarExtra` holding zero vault
+logic of its own, shelling out to the `kagaz` CLI with `--json` the same as
+anything else that talks to a vault. **It has not been built yet** — `app/`
+is an empty placeholder directory in this repo today, not working code.
+Once it exists it will still need signing, notarization and a Homebrew Cask
+(all needing an Apple Developer account) before it's distributable; see
+[docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md).
 
 ## Contributing
 

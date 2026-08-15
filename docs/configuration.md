@@ -133,12 +133,19 @@ Passwords never appear anywhere in the vault — not in a filename, sidecar,
 
 ## `confidential`
 
-| Field | Default | Meaning |
+| Field | Effective value | Meaning |
 |---|---|---|
-| `require_confirmation_on_resolve_for_send` | `true` | Gates `kagaz resolve --for-send`. |
+| `require_confirmation_on_resolve_for_send` | optional; **omitted means required** | Gates `kagaz resolve --for-send`. |
 | `audit_log` | `"vault.log"` | Relative to `vault_root` unless absolute. |
 
-See [commands.md](commands.md#resolve---for-send) for exactly what the gate
+`require_confirmation_on_resolve_for_send` is a genuine tri-state, not a
+bool with a default: the key is optional, and **omitting it means
+confirmation is required** (fails closed). Setting it explicitly to
+`false` in `vault.yaml` genuinely disables the confirmation prompt for
+`resolve --for-send` — Kagaz honours an explicit choice either way; it does
+not silently override `false` back to `true`. Only the *absence* of the
+key is fail-closed, not the value itself. See
+[commands.md](commands.md#resolve---for-send) for exactly what the gate
 does.
 
 ## `doctypes`

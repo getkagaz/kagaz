@@ -10,6 +10,8 @@ two macOS-only frameworks: Vision (OCR) and Apple Foundation Models
 against Swift or Objective-C; it execs the helper and reads JSON from stdout,
 exactly the way the Swift menu-bar app execs `kagaz` itself. This is the only
 contract between the two languages, so it is versioned independently of both.
+Source of truth: `machelper/Sources/MacHelper/Contract.swift`,
+`Main.swift`.
 
 Every response object carries a top-level `"contract": 1` integer. A Go
 caller that receives a contract number it does not understand must reject the
@@ -19,18 +21,31 @@ response with a clear error rather than guess at its shape — see
 The helper is discovered by `internal/vaultkit/ocr.HelperPath()`: first
 `$KAGAZ_MACHELPER`, then the directory of the running `kagaz` executable,
 then `$PATH`, then the standard Homebrew prefixes (`/opt/homebrew/bin`).
-`RunHelper` invokes it and returns stdout, wrapping stderr into the error on
-failure.
+`RunHelper` invokes it and returns stdout.
+
+**Both success and failure payloads are written to stdout, never stderr** —
+that is deliberate, not a fallback: it lets the Go core decode a single
+stream regardless of outcome instead of having to merge two. stderr carries
+only the plain-text `--help`/usage banner when no subcommand is recognized;
+it is never part of the JSON contract and callers must not parse it.
 
 ## `kagaz-machelper ocr`
 
 ```
-kagaz-machelper ocr <path> --langs en-US,hi-IN --json
+kagaz-machelper ocr <path> [--langs en-US,hi-IN] [--dpi 200] [--max-pages N] [--json]
 ```
 
 Runs `VNRecognizeTextRequest` (Vision) at the accurate recognition level with
 language correction on. Handles both images and PDFs (each PDF page is
-rendered and OCR'd separately). `<path>` is a single file.
+rasterised and OCR'd separately). `<path>` is a single file; exactly one
+positional argument is accepted.
+
+| Flag | Meaning |
+|---|---|
+| `--langs` | Comma-separated Vision language hints, e.g. `en-US,hi-IN`. |
+| `--dpi` | Rasterisation resolution for PDF pages before OCR. Defaults to `VisionOCR.defaultDPI`. |
+| `--max-pages` | Caps how many PDF pages are rendered and OCR'd. `0` (the default) means no cap. |
+| `--json` | Accepted for symmetry/scriptability; output is always a single JSON object regardless. |
 
 ### Success shape
 
@@ -57,15 +72,18 @@ rendered and OCR'd separately). `<path>` is a single file.
 ```
 
 - `engine` is always `"vision"` for this subcommand.
-- `confidence` is the document-level average of block confidences, provided
-  as a convenience; callers that need it recompute it themselves rather than
-  trust it blindly.
+- `confidence` is a **length-weighted mean** of block confidences, not a
+  plain average: a long, well-recognized paragraph counts for more than a
+  one-word caption recognized at the same confidence. It is provided as a
+  convenience; callers that need their own aggregate recompute it from
+  `blocks` rather than trust it blindly.
 - `blocks` is one entry per recognized text block, **not required to be in
   reading order** — the caller (`internal/vaultkit/ocr.Vision`) sorts by
   `page`, then by `bbox` top-to-bottom, before joining block text into a
   single `Result.Text`.
-- `bbox` is `[x, y, width, height]` in normalized (0–1) image coordinates,
-  origin top-left.
+- `bbox` is `[x, y, width, height]` in normalized (0–1) page coordinates,
+  origin **top-left** — Vision's native bottom-left origin is converted by
+  the helper before emission, so no caller needs to flip it again.
 - `page` is 1-indexed. `Result.Pages` on the Go side is the highest `page`
   value seen across all blocks.
 
@@ -74,32 +92,43 @@ rendered and OCR'd separately). `<path>` is a single file.
 ```json
 {
   "contract": 1,
-  "error": "unreadable-image",
+  "error": "unsupported_format",
   "message": "the file at <path> is not a recognizable image or PDF"
 }
 ```
 
-The helper exits non-zero on any error. Known `error` codes: `unreadable-image`,
-`unsupported-format`, `io-error`. A Go caller that cannot recognize the
-`error` code still has `message` for a human-readable fallback.
+Error codes the `ocr` subcommand can emit: `file_not_found` (path does not
+exist or is not readable), `unsupported_format` (not decodable as an image
+or PDF), `render_failed` (a PDF page could not be rasterised),
+`ocr_failed` (Vision returned an error while recognizing), `no_text`
+(recognition succeeded but produced nothing), `bad_usage` (missing/extra
+arguments — exit status 2, everything else below exits 1), and
+`internal_error` for anything unforeseen.
 
 ## `kagaz-machelper classify`
 
 ```
-kagaz-machelper classify --backend apple --doctypes "invoice:financial,receipt:financial,passport:identity,..." --json
+kagaz-machelper classify --backend apple --doctypes "invoice:financial,receipt:financial,passport:identity,..." [--max-chars N] [--json]
 ```
 
-Text to classify is piped on stdin (never a network call, never written to
-disk by the helper). `--doctypes` is the compact `name:category,…` spec
-produced by `doctypes.Catalog.Spec()` — this is how classifier output is
-constrained to the vault's actual catalog rather than an invented category
-(Global Constraint 8).
+Text to classify is piped on **stdin** (never a network call, never written
+to disk by the helper; empty or non-UTF-8 stdin is a `empty_input` error).
+`--doctypes` is the compact `name:category,…` spec produced by
+`doctypes.Catalog.Spec()` — this is how classifier output is constrained to
+the vault's actual catalog rather than an invented category (Global
+Constraint 8). `--max-chars` caps how much of stdin is sent to the model
+(defaults to `AppleClassifier.defaultMaxChars`); text beyond the cap is
+simply not considered, not an error.
+
+This binary (`machelper/`) implements only `--backend apple`; `--backend
+mlx` is a **different binary**, `kagaz-machelper-mlx` (`machelper-mlx/`),
+which implements the same contract shape under its own binary name. Passing
+`--backend mlx` to `kagaz-machelper` itself is a `unknown_backend` error
+that says so explicitly, not a silent redirect.
 
 Classification uses Apple Foundation Models' **guided generation**, gated
 `@available(macOS 26, *)`, constrained to the supplied doctype list so the
-model cannot emit anything outside it. `--backend mlx` is the analogous
-contract implemented by the separate `kagaz-machelper-mlx` binary
-(`machelper-mlx/`), loading weights via `kagaz model pull`.
+model cannot emit anything outside it.
 
 ### Success shape
 
@@ -120,23 +149,47 @@ contract implemented by the separate `kagaz-machelper-mlx` binary
 - `doctype` and `category` MUST be one of the pairs supplied in
   `--doctypes`; the Go caller re-validates this regardless (never trust a
   subprocess to have honored its own constraint).
-- `fields` is optional and may be empty or absent.
+- `confidence` here is the model's own self-reported certainty (0.0–1.0),
+  not a derived statistic — the model is prompted to give an honest low
+  score rather than guess when uncertain.
+- `fields` is always present but may be `{}` when nothing was extracted —
+  it is a plain dictionary in the Swift struct, never an absent key.
 
 ### Error / unavailable shape
 
-On macOS 15–25, when the on-device model is not yet downloaded, or when
-generation fails for any reason, the helper exits non-zero with:
+On macOS 15–25, when Apple Intelligence is off, the device is ineligible,
+the model is still downloading, or generation otherwise fails, the helper
+exits non-zero with:
 
 ```json
 {
   "contract": 1,
-  "error": "unavailable",
-  "message": "Apple Foundation Models requires macOS 26 or later"
+  "error": "unsupported_os",
+  "message": "requires macOS 26 or newer"
 }
 ```
 
-Other `error` codes: `model-not-ready`, `generation-failed`,
-`invalid-doctypes`. This is not a failure of the pipeline: the Go core
+or, once the OS check passes but the model itself is not usable right now:
+
+```json
+{
+  "contract": 1,
+  "error": "backend_unavailable",
+  "message": "Apple Foundation Models unavailable: <reason>"
+}
+```
+
+Error codes the `classify` subcommand can emit: `empty_input` (no text on
+stdin), `invalid_doctypes` (`--doctypes` empty or unparseable),
+`unknown_backend` (an unimplemented `--backend`), `unsupported_os` (OS
+older than macOS 26), `backend_unavailable` (OS is new enough but the model
+itself isn't usable right now), `classify_failed` (the model ran but its
+answer was unusable — empty, or not in the catalog), `bad_usage`, and
+`internal_error`. `kagaz-machelper-mlx` additionally uses `model_not_found`
+(the MLX weight directory does not exist — run `kagaz model pull`) and
+`model_load_failed` (weights exist but would not load).
+
+None of this is a failure of the Kagaz pipeline: the Go core
 (`internal/vaultkit/classify`) falls back to the `rules` engine whenever the
 helper is absent, exits non-zero, or returns a confidence below
 `classify.min_confidence`.
@@ -144,21 +197,43 @@ helper is absent, exits non-zero, or returns a confidence below
 ### `--probe`
 
 ```
-kagaz-machelper classify --backend apple --probe --json
+kagaz-machelper --probe [--backend apple]
 ```
 
-A fast availability check with no text on stdin, used by
-`classify.Available()` and cached for the process lifetime:
+(also accepted as `kagaz-machelper classify --backend apple --probe` — both
+forms reach the same code path.) A fast availability check with no text on
+stdin, used by `classify.Available()` and cached for the process lifetime.
+Always exits `0` when the probe itself ran; `available` carries the answer:
 
 ```json
-{ "contract": 1, "available": true }
+{ "contract": 1, "engine": "apple", "available": true, "reason": null }
 ```
 
 or
 
 ```json
-{ "contract": 1, "available": false, "message": "Apple Foundation Models requires macOS 26 or later" }
+{ "contract": 1, "engine": "apple", "available": false, "reason": "requires macOS 26 or newer" }
 ```
+
+Note the field is **`reason`**, not `message` — this is the one payload in
+the contract that differs from the `error`/`message` naming used elsewhere,
+because a probe result isn't an error: `available: false` is a normal,
+expected answer, not a failure. `internal/vaultkit/classify/helper.go`
+decodes `reason` specifically; do not confuse it with the `message` field
+on the `ocr`/`classify` error payloads above.
+
+## `--version`
+
+```
+kagaz-machelper --version
+```
+
+```json
+{ "contract": 1, "engine": "machelper", "version": "1.0.0" }
+```
+
+`version` is the helper binary's own release version, independent of and
+not to be confused with `contract`.
 
 ## Compatibility
 
