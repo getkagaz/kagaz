@@ -212,3 +212,31 @@ func modelCacheAcceptsRepoID() throws {
     #expect(url.path.hasPrefix(ModelCache.root.path))
     #expect(url.path.hasSuffix("kagaz/models/mlx-community/Qwen2.5-3B-Instruct-4bit"))
 }
+
+// MARK: - MetalRuntime
+
+// These assert the property that made the old probe dangerous, not a specific
+// machine: `available: true` must never outlive the shader library. They hold
+// on a developer box with the metallib built and in CI without it.
+
+@Test("the probe cannot report available when mlx would find no shader library")
+func probeAgreesWithTheShaderLibrarySearch() {
+    if MetalRuntime.shaderLibraryURL() == nil {
+        #expect(MetalRuntime.unavailableReason() != nil)
+        #expect(MLXClassifier.probe(repo: ModelCache.defaultRepo).available == false)
+    }
+}
+
+@Test("the shader library is looked for beside the running binary")
+func binaryDirectoriesAreResolved() throws {
+    let directories = try #require(MetalRuntime.binaryDirectories().first.map { [$0] })
+    // dladdr — which is how mlx itself locates the directory — reports the
+    // symlink-resolved path, so the first candidate must be resolved too.
+    #expect(directories[0] == directories[0].resolvingSymlinksInPath())
+}
+
+@Test("a missing shader library is a backend_unavailable, not an MLX abort")
+func requireAvailableThrowsHelperError() {
+    guard MetalRuntime.unavailableReason() != nil else { return }
+    #expect(throws: HelperError.self) { try MetalRuntime.requireAvailable() }
+}

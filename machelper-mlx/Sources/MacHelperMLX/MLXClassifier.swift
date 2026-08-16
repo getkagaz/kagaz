@@ -31,6 +31,11 @@ enum MLXClassifier {
         repo: String,
         maxChars: Int
     ) async throws -> ClassifyResponse {
+        // Pre-flight before MLX is touched. Without this, a missing shader
+        // library surfaces as an MLX C++ error printed from under the Swift
+        // runtime with no contract payload at all, which the Go core cannot
+        // decode and cannot fall back from cleanly.
+        try MetalRuntime.requireAvailable()
         let directory = try ModelCache.resolve(repo: repo)
 
         let container: ModelContainer
@@ -73,11 +78,25 @@ enum MLXClassifier {
         return try decode(output: output, catalog: catalog, repo: repo)
     }
 
-    /// Fast availability check: does the weight directory exist and look
-    /// complete? No model is loaded, so this stays in the millisecond range —
-    /// the Go core calls it before every classify.
+    /// Fast availability check: **can this backend actually classify?**
+    ///
+    /// Two things have to be true, and the probe answers `false` with a reason
+    /// unless both are. It used to answer only the second, which made it lie:
+    /// a helper built by `swift build` has no compiled Metal shader library, so
+    /// it reported `available: true` and then aborted on the first document.
+    /// The Go `Chain` selects a tier on this answer, so a false positive is
+    /// worse than no probe at all.
+    ///
+    /// 1. the MLX runtime works — a Metal device exists and mlx's shader
+    ///    library is present *where mlx looks for it* and loads on that device;
+    /// 2. the weight directory for `repo` exists and looks complete.
+    ///
+    /// No model is loaded, so this stays in the millisecond range.
     static func probe(repo: String) -> ProbeResponse {
-        ModelCache.check(repo: repo)
+        if let reason = MetalRuntime.unavailableReason() {
+            return ProbeResponse(contract: contractVersion, engine: "mlx", available: false, reason: reason)
+        }
+        return ModelCache.check(repo: repo)
     }
 
     // MARK: - Decoding
