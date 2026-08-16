@@ -130,6 +130,12 @@ type Proposal struct {
 	OCREngine string `json:"ocr_engine"`
 	// Fields are the extracted structured values.
 	Fields map[string]string `json:"fields,omitempty"`
+	// DroppedFields are fields the classifier's model proposed and the chain
+	// withheld -- because the value could not be found in the document text,
+	// or because the rules tier extracted the same field from the text
+	// directly. They are shown in the preview so an absent field is explained
+	// rather than silent.
+	DroppedFields []classify.DroppedField `json:"dropped_fields,omitempty"`
 	// Text is the extracted text. Execute truncates it into the sidecar.
 	Text string `json:"-"`
 
@@ -363,6 +369,7 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error
 	prop.Confidence = cls.Confidence
 	prop.Classifier = cls.Engine
 	prop.Fields = cls.Fields
+	prop.DroppedFields = cls.Dropped
 	prop.Why.DocType = Reason{
 		Value:  cls.DocType,
 		Source: SourceClassifier,

@@ -577,3 +577,98 @@ func TestMissingHelperIsNotCached(t *testing.T) {
 		t.Fatal("Available() = false after the helper appeared: absence must not be cached")
 	}
 }
+
+// TestChainDropsHallucinatedFields replays the exact Apple Foundation Models
+// response that exposed the defect: a short business proposal containing no
+// date and no reference number came back with date=2025-01-01 and
+// document_number=12345, placeholder-shaped values invented to fill the
+// schema. Those would have been written to the sidecar as facts about the
+// user's document. The two fields that are really in the text must survive
+// untouched -- a grounding check that strips real data is a worse defect than
+// the one it fixes.
+func TestChainDropsHallucinatedFields(t *testing.T) {
+	const text = "BUSINESS PROPOSAL\nPrepared for: Hytron Metals\nPrepared by: Avvara Studio\n" +
+		"Scope: automation of the recruitment pipeline.\nCommercials and phased delivery follow.\n"
+
+	cat := testCatalog(t)
+	c := chainWith(cat, config.EngineApple, appleWith(t, "classify_hallucinated_fields.json", nil))
+
+	res, err := c.Classify(context.Background(), Request{Text: text, Catalog: cat})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if res.DocType != "proposal" {
+		t.Fatalf("doctype = %q, want proposal", res.DocType)
+	}
+	for _, k := range []string{"issuer", "prepared for"} {
+		if res.Fields[k] == "" {
+			t.Errorf("field %q was dropped; it is written in the document text", k)
+		}
+	}
+	for _, k := range []string{"date", "document_number"} {
+		if v, ok := res.Fields[k]; ok {
+			t.Errorf("field %q = %q survived; the document contains no such value", k, v)
+		}
+	}
+	if len(res.Dropped) != 2 {
+		t.Fatalf("Dropped = %+v, want the two fabricated fields recorded", res.Dropped)
+	}
+	for _, d := range res.Dropped {
+		if d.Reason != ReasonUngrounded {
+			t.Errorf("%s dropped with reason %q, want ReasonUngrounded", d.Field, d.Reason)
+		}
+	}
+}
+
+// TestChainKeepsGroundedFields is the regression the fix must not break: a
+// genuine invoice keeps every real field, including the ones a model
+// reformats -- an amount without its thousands separator and a date rewritten
+// into ISO form.
+func TestChainKeepsGroundedFields(t *testing.T) {
+	const text = "TAX INVOICE / Invoice Number: INV-2026-4471 / Bill To: Alex Rao / " +
+		"Acme Corp / Total: Rs. 4,800.00 / Due Date: 11 March 2026"
+
+	cat := testCatalog(t)
+	c := chainWith(cat, config.EngineApple, appleWith(t, "classify_hallucinated_fields.json", nil))
+	c.Apple = &Apple{
+		locate: found,
+		run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+			if isProbe(args) {
+				return fixture(t, "probe_available.json"), nil
+			}
+			return []byte(`{"contract":1,"engine":"apple","doctype":"invoice","category":"finance",` +
+				`"confidence":0.9,"fields":{"invoice_number":"INV-2026-4471","bill_to":"alex rao",` +
+				`"issuer":"Acme Corp","amount":"4800","due_date":"2026-03-11"}}`), nil
+		},
+	}
+
+	res, err := c.Classify(context.Background(), Request{Text: text, Catalog: cat})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	// The model's own renderings, kept because the document really says them:
+	// a lowercased name, and a name the catalog has no template for.
+	want := map[string]string{
+		"invoice_number": "INV-2026-4471",
+		"bill_to":        "alex rao",
+		"issuer":         "Acme Corp",
+	}
+	for k, v := range want {
+		if got := res.Fields[k]; got != v {
+			t.Errorf("field %q = %q, want %q kept: it is in the document, only rendered differently", k, got, v)
+		}
+	}
+	// amount and due_date have catalog templates, so the regex capture off the
+	// real text wins over the model's reformatting. Nothing is lost: the field
+	// is present, with the document's own rendering.
+	for k, v := range map[string]string{"amount": "4,800.00", "due_date": "11 March 2026"} {
+		if got := res.Fields[k]; got != v {
+			t.Errorf("field %q = %q, want the rules capture %q", k, got, v)
+		}
+	}
+	for _, d := range res.Dropped {
+		if d.Reason == ReasonUngrounded {
+			t.Errorf("%s=%q was dropped as ungrounded, but the document says it", d.Field, d.Value)
+		}
+	}
+}

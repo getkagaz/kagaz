@@ -55,6 +55,7 @@ package classify
 import (
 	"context"
 	"math"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -101,8 +102,13 @@ type Result struct {
 	Category string
 	// Confidence is 0-1. Zero for Unclassified.
 	Confidence float64
-	// Fields are extracted structured values; nil when there are none.
+	// Fields are extracted structured values; nil when there are none. Every
+	// model-supplied value in here has been found in the document text (see
+	// grounder); values that could not be are in Dropped instead.
 	Fields map[string]string
+	// Dropped lists model-supplied fields that were withheld, with the reason,
+	// so ingest can explain the absence rather than leave a silent hole.
+	Dropped []DroppedField
 	// Engine records which backend produced the accepted answer:
 	// "apple" | "rules" | "mlx:<model basename>" | "ollama:<model>". It lands
 	// in the sidecar's `classifier` field.
@@ -211,30 +217,91 @@ func validate(cat *doctypes.Catalog, res Result, min float64) (Result, bool) {
 	}, true
 }
 
-// mergeFields combines deterministic extraction with a model's fields.
-// Deterministic values win: a regex that fired on the real document text is
-// better evidence than a value a model may have paraphrased. Model fields fill
-// the gaps the catalog has no template for.
-func mergeFields(deterministic, model map[string]string) map[string]string {
+// mergeFields combines deterministic extraction with a model's fields, and is
+// the one place a model-supplied field can become a fact about a document.
+//
+// Two rules decide what survives, and both exist because a wrong fact in a
+// sidecar is worse than a missing one:
+//
+//   - Deterministic values win. doctypes.ExtractFields is a regex capture off
+//     the real document text, so it is grounded by construction and is never
+//     checked, never overwritten and never dropped. When the model returns the
+//     same field name with a different value, the model's copy is dropped and
+//     recorded with ReasonSuperseded; when the two agree there is nothing to
+//     explain and nothing is recorded.
+//   - Model values must be found in the text. Anything the model supplies for
+//     a field the catalog has no template for is put through grounder against
+//     the full text, and dropped with ReasonUngrounded if it is not there.
+//
+// text must be the unclipped Request.Text; see newGrounder.
+func mergeFields(deterministic, model map[string]string, text string) (map[string]string, []DroppedField) {
 	if len(deterministic) == 0 && len(model) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]string, len(deterministic)+len(model))
-	for k, v := range model {
+	for k, v := range deterministic {
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
 		if k != "" && v != "" {
 			out[k] = v
 		}
 	}
-	for k, v := range deterministic {
-		if k != "" && v != "" {
-			out[k] = v
+
+	var g *grounder
+	var dropped []DroppedField
+	// Sorted so a dropped-field list is stable across runs and readable in a
+	// preview: Go map iteration order is not.
+	for _, k := range sortedKeys(model) {
+		v := strings.TrimSpace(model[k])
+		key := strings.TrimSpace(k)
+		if key == "" || v == "" {
+			continue
 		}
+		if have, ok := out[key]; ok {
+			if !sameValue(have, v) {
+				dropped = append(dropped, DroppedField{Field: key, Value: v, Reason: ReasonSuperseded})
+			}
+			continue
+		}
+		if g == nil {
+			g = newGrounder(text)
+		}
+		if !g.grounded(v) {
+			dropped = append(dropped, DroppedField{Field: key, Value: v, Reason: ReasonUngrounded})
+			continue
+		}
+		out[key] = v
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, dropped
 	}
+	return out, dropped
+}
+
+// sortedKeys returns m's keys in a stable order.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
+}
+
+// sameValue reports whether two renderings of a field value say the same
+// thing, ignoring case, punctuation and spacing -- so a model echoing the
+// rules tier's own capture back in a different shape is not reported as a
+// disagreement the user has to read about.
+func sameValue(a, b string) bool {
+	ta, tb := tokenize(a), tokenize(b)
+	if len(ta) != len(tb) {
+		return false
+	}
+	for i := range ta {
+		if ta[i] != tb[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // modelBasename reduces a Hugging Face repo path to the name a user recognises,

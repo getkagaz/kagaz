@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "engine": "apple",
+  "doctype": "proposal",
+  "category": "company",
+  "confidence": 0.9,
+  "fields": {
+    "date": "2025-01-01",
+    "document_number": "12345",
+    "issuer": "Avvara Studio",
+    "prepared for": "Hytron Metals"
+  }
+}

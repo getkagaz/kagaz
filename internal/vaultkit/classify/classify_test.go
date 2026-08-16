@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
@@ -180,9 +181,11 @@ func TestModelBasename(t *testing.T) {
 }
 
 func TestMergeFieldsPrefersDeterministic(t *testing.T) {
-	got := mergeFields(
+	const text = "Invoice from Acme for 4800.00, about 4800 all in."
+	got, dropped := mergeFields(
 		map[string]string{"amount": "4800.00"},
 		map[string]string{"amount": "about 4800", "vendor": "Acme"},
+		text,
 	)
 	if got["amount"] != "4800.00" {
 		t.Errorf("amount = %q, want the deterministic value", got["amount"])
@@ -190,11 +193,110 @@ func TestMergeFieldsPrefersDeterministic(t *testing.T) {
 	if got["vendor"] != "Acme" {
 		t.Errorf("vendor = %q, want the model value to fill the gap", got["vendor"])
 	}
-	if mergeFields(nil, nil) != nil {
+	if len(dropped) != 1 || dropped[0].Field != "amount" || dropped[0].Reason != ReasonSuperseded {
+		t.Errorf("dropped = %+v, want the model's amount superseded by the rules value", dropped)
+	}
+	if m, d := mergeFields(nil, nil, ""); m != nil || d != nil {
 		t.Error("mergeFields(nil, nil) should be nil, not an empty map")
 	}
-	if mergeFields(nil, map[string]string{" ": "x", "k": " "}) != nil {
+	if m, _ := mergeFields(nil, map[string]string{" ": "x", "k": " "}, "x"); m != nil {
 		t.Error("blank keys and values should be dropped, leaving nil")
+	}
+}
+
+// TestMergeFieldsDropsUngrounded is the defect this file's grounding check
+// exists for: the Apple backend returned a placeholder date and document
+// number for a proposal containing neither.
+func TestMergeFieldsDropsUngrounded(t *testing.T) {
+	const text = "BUSINESS PROPOSAL\nPrepared for: Hytron Metals\nPrepared by: Avvara Studio\n"
+	got, dropped := mergeFields(nil, map[string]string{
+		"date":            "2025-01-01",
+		"document_number": "12345",
+		"issuer":          "Avvara Studio",
+		"prepared for":    "Hytron Metals",
+	}, text)
+
+	for _, k := range []string{"issuer", "prepared for"} {
+		if got[k] == "" {
+			t.Errorf("%s was dropped; it is in the text and must survive", k)
+		}
+	}
+	for _, k := range []string{"date", "document_number"} {
+		if v, ok := got[k]; ok {
+			t.Errorf("%s = %q survived; it appears nowhere in the text", k, v)
+		}
+	}
+	if len(dropped) != 2 {
+		t.Fatalf("dropped = %+v, want exactly the two fabricated fields", dropped)
+	}
+	for _, d := range dropped {
+		if d.Reason != ReasonUngrounded {
+			t.Errorf("%s dropped for %q, want the ungrounded reason", d.Field, d.Reason)
+		}
+	}
+}
+
+// TestGrounded is the hostile table. Every "want true" row is a formatting
+// difference a model legitimately introduces; every "want false" row is
+// something the document does not say.
+func TestGrounded(t *testing.T) {
+	const invoice = "TAX INVOICE / Invoice Number: INV-2026-4471 / Bill To: Alex Rao / " +
+		"Acme Corp / Total: 4800.00 / Due Date: 11 March 2026"
+	const proposal = "BUSINESS PROPOSAL\nPrepared for: Hytron Metals\nPrepared by: Avvara Studio\n" +
+		"Scope: automation of the recruitment pipeline.\nCommercials and phased delivery follow.\n"
+
+	tests := []struct {
+		name string
+		text string
+		val  string
+		want bool
+	}{
+		{"exact match", invoice, "INV-2026-4471", true},
+		{"case difference", invoice, "acme corp", true},
+		{"whitespace difference", "Bill To:\n  Alex   Rao\n", "Alex Rao", true},
+		{"punctuation difference", invoice, "INV/2026/4471", true},
+		{"thousands separator and decimals", "Amount due Rs. 4,800.00 only", "4800", true},
+		{"decimals against a plain integer", "Total: 4800", "4,800.00", true},
+		{"date normalised to ISO", invoice, "2026-03-11", true},
+		{"date rendered long from ISO", "Dated 2026-03-11.", "11 March 2026", true},
+		{"abbreviated month", "Issued 11 Mar 2026", "2026-03-11", true},
+		{"month-first rendering", "March 11, 2026", "2026-03-11", true},
+		{"two-digit year", "Paid 11/03/26", "2026-03-11", true},
+		{"ambiguous numeric date, other reading", "Paid 03/11/2026", "2026-03-11", true},
+
+		{"fabricated date", proposal, "2025-01-01", false},
+		{"fabricated document number", proposal, "12345", false},
+		{"fabricated date against a real invoice", invoice, "2025-01-01", false},
+		{"fabricated number against a real invoice", invoice, "12345", false},
+		{"wrong year, right month and day", invoice, "2019-03-11", false},
+		{"wrong day", invoice, "2026-03-12", false},
+		{"number that is not in the text", invoice, "4900", false},
+		{"tokens present but not adjacent", "Acme is here. Corp is elsewhere.", "Acme Corp", false},
+		{"words wrapped round a real number", invoice, "invoice 12345", false},
+		{"partial token", invoice, "Acme Corporation", false},
+		{"empty value", invoice, "", false},
+		{"blank value", invoice, "   ", false},
+		{"empty text", "", "Acme", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Grounded(tc.text, tc.val); got != tc.want {
+				t.Errorf("Grounded(%q) = %v, want %v", tc.val, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGroundedUsesUnclippedText proves a value that only appears past maxText
+// is still grounded: the model is shown a clipped copy, but the check runs
+// against Request.Text in full.
+func TestGroundedUsesUnclippedText(t *testing.T) {
+	text := strings.Repeat("a ", maxText) + "Zephyr Holdings"
+	got, dropped := mergeFields(nil, map[string]string{"issuer": "Zephyr Holdings"}, text)
+	if got["issuer"] != "Zephyr Holdings" {
+		t.Errorf("issuer = %q (dropped %+v), want the value grounded in the clipped-away tail",
+			got["issuer"], dropped)
 	}
 }
 

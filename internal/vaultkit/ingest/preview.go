@@ -42,6 +42,9 @@ func (p Proposal) Preview() string {
 	for _, d := range p.DroppedTags {
 		fmt.Fprintf(&b, "   tag?  %s not applied: %s\n", d.Tag, d.Reason)
 	}
+	for _, d := range p.DroppedFields {
+		fmt.Fprintf(&b, "   field %s=%q not recorded: %s\n", d.Field, d.Value, d.Reason)
+	}
 	for _, line := range p.Explain() {
 		fmt.Fprintf(&b, "   why   %s\n", line)
 	}

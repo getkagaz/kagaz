@@ -130,8 +130,12 @@ func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request
 		return Result{}, false
 	}
 	// Deterministic extraction stays authoritative for structured fields; the
-	// model's fields only fill gaps the catalog has no template for.
-	res.Fields = mergeFields(cat.ExtractFields(res.DocType, req.Text), raw.Fields)
+	// model's fields only fill gaps the catalog has no template for, and only
+	// when the value they carry is actually in the document (see grounder).
+	// This is the only place every backend's fields pass through, which is why
+	// the check lives here and not in ingest: a second backend, or a second
+	// caller of the chain, would otherwise have to remember to repeat it.
+	res.Fields, res.Dropped = mergeFields(cat.ExtractFields(res.DocType, req.Text), raw.Fields, req.Text)
 	return res, true
 }
 
@@ -151,7 +155,10 @@ func (c *Chain) rulesResult(ctx context.Context, req Request, cat *doctypes.Cata
 	if !ok {
 		return unclassified()
 	}
-	res.Fields = mergeFields(cat.ExtractFields(res.DocType, req.Text), raw.Fields)
+	// The rules tier's own fields are regex captures over this same text, so
+	// they arrive on the deterministic side and are never grounding-checked:
+	// they cannot be anything but grounded.
+	res.Fields, res.Dropped = mergeFields(cat.ExtractFields(res.DocType, req.Text), raw.Fields, req.Text)
 	return res
 }
 
