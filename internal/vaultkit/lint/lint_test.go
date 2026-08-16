@@ -611,3 +611,43 @@ func TestUnconfiguredOwnerIsStillPlacedUnderTheDefaultGrammar(t *testing.T) {
 		t.Errorf("repair.MoveTo = %q, want %q", f.Repair.MoveTo, correct)
 	}
 }
+
+// TestSharedFolderDocumentIsNotFlaggedAsMisplaced is the downstream reason the
+// conventions package treats a category's shared label as "no owner". The
+// identity category files unowned documents in _Shared, but the filename
+// pattern's {Names} field is required, so the label appears in the name too.
+// Reading it back as a person called "Shared" made checkPlacement recompute the
+// folder as Identity/Shared and report every such document as wrong-folder --
+// and --fix would then have moved them out of the shared folder.
+func TestSharedFolderDocumentIsNotFlaggedAsMisplaced(t *testing.T) {
+	v := newVault(t, "")
+	correct := "Identity/_Shared/Passport_Shared_Home-Office.txt"
+	v.write(correct, "x")
+
+	findings := v.run()
+	for _, f := range findings {
+		if f.Path == correct && (f.Rule == RuleWrongFolder || f.Rule == RuleNameNormalization) {
+			t.Errorf("a correctly filed unowned document was flagged %s: %+v", f.Rule, f.Repair)
+		}
+	}
+
+	// The document is genuinely unowned, not owned by a phantom person.
+	l := v.linter()
+	tree, err := l.Search.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen bool
+	for _, d := range tree.Documents {
+		if filepath.ToSlash(d.RelPath) != correct {
+			continue
+		}
+		seen = true
+		if len(d.Doc.Owners) != 0 {
+			t.Errorf("owners = %q, want none: %q is the shared label", d.Doc.Owners, "_Shared")
+		}
+	}
+	if !seen {
+		t.Fatalf("%s was not scanned", correct)
+	}
+}

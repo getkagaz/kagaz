@@ -49,6 +49,10 @@ type Doc struct {
 type Conventions struct {
 	cfg      *config.Config
 	segments []segment
+	// shared holds every category's shared label, normalised the way Render
+	// would spell it in a filename and lowercased for comparison. See
+	// isSharedLabel.
+	shared map[string]bool
 }
 
 type segment struct {
@@ -64,7 +68,52 @@ func New(cfg *config.Config) (*Conventions, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Conventions{cfg: cfg, segments: segs}, nil
+	c := &Conventions{cfg: cfg, segments: segs}
+	c.shared = c.sharedLabels()
+	return c, nil
+}
+
+// sharedLabels collects the shared folder label of every configured category,
+// spelled the way Render would put it in a filename. A vault may use any label
+// and different categories may use different ones, so all of them are
+// collected rather than one.
+func (c *Conventions) sharedLabels() map[string]bool {
+	out := make(map[string]bool, len(c.cfg.Structure))
+	for _, cat := range c.cfg.Structure {
+		if cat.Shared == "" {
+			continue
+		}
+		if w := c.Word(cat.Shared); w != "" {
+			out[strings.ToLower(w)] = true
+		}
+	}
+	return out
+}
+
+// isSharedLabel reports whether a whole {Names} field value is a category's
+// shared label rather than a person.
+//
+// A category with `shared:` files its unowned documents in that folder, but a
+// filename pattern with a required {Names} field cannot leave the name blank,
+// so ingest writes the shared label there instead. Reading that back as a
+// person of that name invents somebody: lint would then compute the owner
+// folder from the invented name and report every correctly filed unowned
+// document as being in the wrong folder, and search would list a phantom owner.
+//
+// The comparison is against the whole field value after the same normalisation
+// Render applies, so config's "_Shared" matches the filename's "Shared" without
+// the underscore being hardcoded, while a real person whose name merely
+// contains the label -- "Shared Services Ltd", rendered "Shared-Services-Ltd"
+// -- is unaffected and still resolves to that person.
+//
+// Accepted cost: in a vault whose category uses "_Shared", a real person named
+// exactly "Shared" parses as unowned. Renaming the label (or the person) is the
+// only remedy; the grammar cannot tell the two apart.
+func (c *Conventions) isSharedLabel(value string) bool {
+	if value == "" || len(c.shared) == 0 {
+		return false
+	}
+	return c.shared[strings.ToLower(c.Word(value))]
 }
 
 // parsePattern turns "{A}_{B}[_{C}]" into an ordered field list. Literal text
@@ -368,6 +417,11 @@ func (c *Conventions) assign(doc *Doc, field, value string) {
 	case FieldDocType:
 		doc.DocType = config.Slug(value)
 	case FieldNames:
+		if c.isSharedLabel(value) {
+			// The category's shared label, not a person: definitively unowned,
+			// and not ambiguous. Leave Owners nil.
+			return
+		}
 		if value != "" {
 			doc.Owners = strings.Split(value, c.cfg.OwnerGroup.SeparatorFilename)
 			for i, o := range doc.Owners {
