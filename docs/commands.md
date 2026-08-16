@@ -176,19 +176,35 @@ that keeps proposals current without you needing to remember to run
 
 ## `kagaz mcp`
 
-**Not implemented in this build.** `kagaz mcp` prints the planned tool surface
-and exits 1; there is no server to connect to yet. Until it lands, an agent
-should drive the CLI directly with `--json`, which is the same data by
-construction.
+Runs the Model Context Protocol server on stdin/stdout: newline-delimited
+JSON-RPC 2.0, one message per line, answering `initialize`, `tools/list` and
+`tools/call`. It serves until stdin closes. The protocol revision reported by
+`initialize` is `2025-06-18`; `2025-03-26` and `2024-11-05` are accepted if a
+client asks for them. `kagaz-mcp` is the same server under its own name, for
+client configurations that name a binary rather than a subcommand — every
+argument is forwarded to `kagaz mcp`.
 
-The planned surface is a stdio MCP server (JSON-RPC 2.0): `initialize`,
-`tools/list`, `tools/call` for `find`, `ingest_propose`, `tag`,
-`resolve_for_send`. Each tool will be a thin wrapper over the same vaultkit
-calls the CLI itself uses, returning the same JSON shapes — an MCP client and a
-`kagaz --json` caller will see identical data. `resolve_for_send` will preserve
-the confidential gate exactly as described above: it cannot auto-confirm, and
-returns the same `confirmation_required` structure. See
-[docs/agents.md](agents.md) for how an agent is expected to use this.
+The tool surface is fixed at four propose-only tools:
+
+| Tool | Wraps |
+| --- | --- |
+| `find` | `kagaz find --json` |
+| `ingest_propose` | `kagaz ingest --propose-only --json` |
+| `tag` | `kagaz tag --propose-only --json` |
+| `resolve_for_send` | `kagaz resolve --for-send --json` |
+
+Each returns that command's envelope verbatim, so an MCP client and a
+`kagaz --json` caller see identical data. There is deliberately **no tool that
+executes a proposal**: an agent proposes and a human runs the CLI.
+`resolve_for_send` preserves the confidential gate exactly as described above —
+it cannot auto-confirm, only the caller's explicit `confirm: true` argument
+supplies consent, the audit line is written on both branches before any path is
+handed over, and a gated call without confirmation returns the
+`confirmation_required` structure and no path.
+
+`kagaz mcp --describe` prints the surface (with `--json`, as an envelope)
+instead of serving it. See [docs/agents.md](agents.md) for how an agent is
+expected to use this.
 
 ## `kagaz completion`
 

@@ -353,10 +353,10 @@ func TestResolveWithoutForSendReturnsAPath(t *testing.T) {
 	}
 }
 
-func TestMCPStubIsPropseOnlyAndHasNoExecuteTool(t *testing.T) {
-	out, _, code := run(t, "mcp", "--json")
-	if code == ExitOK {
-		t.Fatalf("the mcp stub reported success: %s", out)
+func TestMCPSurfaceIsProposeOnlyAndHasNoExecuteTool(t *testing.T) {
+	out, errw, code := run(t, "mcp", "--describe", "--json")
+	if code != ExitOK {
+		t.Fatalf("mcp --describe exit %d: %s\n%s", code, out, errw)
 	}
 	obj := decode(t, out)
 	tools, _ := obj["tools"].([]any)

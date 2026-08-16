@@ -32,10 +32,14 @@ func TestEndToEndTranscript(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	exec := func(args ...string) int {
+	execIn := func(stdin string, args ...string) int {
 		var out, errw bytes.Buffer
-		code := Main("0.1.0", args, &out, &errw, strings.NewReader(""))
-		fmt.Fprintf(&log, "\n$ kagaz %s\n", strings.Join(args, " "))
+		code := Main("0.1.0", args, &out, &errw, strings.NewReader(stdin))
+		if stdin != "" {
+			fmt.Fprintf(&log, "\n$ printf '%%s\\n' '...' | kagaz %s\n%s", strings.Join(args, " "), stdin)
+		} else {
+			fmt.Fprintf(&log, "\n$ kagaz %s\n", strings.Join(args, " "))
+		}
 		if s := out.String(); s != "" {
 			log.WriteString(s)
 		}
@@ -45,6 +49,7 @@ func TestEndToEndTranscript(t *testing.T) {
 		fmt.Fprintf(&log, "[exit %d]\n", code)
 		return code
 	}
+	exec := func(args ...string) int { return execIn("", args...) }
 
 	exec("--version")
 	exec("init", "--root", vaultRoot, "--demo")
@@ -84,7 +89,15 @@ func TestEndToEndTranscript(t *testing.T) {
 		filepath.Join(vaultRoot, "Identity", "Alex-Rao", "Passport_Alex-Rao_Passport-Office_2014.pdf"), confidential)
 	exec("--vault", vault, "rollback")
 	exec("--vault", vault, "lint")
-	exec("mcp")
+	exec("mcp", "--describe")
+	execIn(strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"transcript","version":"0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find","arguments":{"doctype":"passport"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"resolve_for_send","arguments":{"reference":` + quote(confidential) + `}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"resolve_for_send","arguments":{"reference":` + quote(confidential) + `,"confirm":true}}}`,
+		"",
+	}, "\n"), "--vault", vault, "mcp")
 	exec("--vault", vault, "find", "--nope")
 
 	if body, err := os.ReadFile(vault); err == nil {
