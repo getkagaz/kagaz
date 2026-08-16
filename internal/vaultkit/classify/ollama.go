@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
+	"github.com/getkagaz/kagaz/internal/vaultkit/doctypes"
 )
 
 // localOnlyClient is the package's HTTP client for the Ollama classify backend.
@@ -300,8 +301,10 @@ func isRedirect(code int) bool { return code >= 300 && code <= 399 }
 // ollamaSystemPrompt keeps the model inside the catalog and stops it inventing
 // doctypes. Validation still assumes it will try.
 const ollamaSystemPrompt = "You classify documents. Choose exactly one doctype from the provided list. " +
-	"If none fits, answer with the doctype \"unclassified\" and confidence 0. " +
-	"Never invent a doctype or a category. Reply with JSON only."
+	"If none of them genuinely fits, answer with the doctype \"unclassified\" and confidence 0; " +
+	"prefer \"unclassified\" over a near miss, because a near miss files the document in the wrong place. " +
+	"Otherwise confidence is your certainty from 0.0 to 1.0: reserve 0.8 and above for a document that " +
+	"plainly announces its own type. Never invent a doctype or a category. Reply with JSON only."
 
 // ollamaSchema constrains the reply. Ollama's `format` accepts a JSON schema
 // and enforces it during sampling, which is what makes this parseable without
@@ -323,6 +326,11 @@ func ollamaPrompt(req Request) string {
 	if spec := req.spec(); spec != "" {
 		b.WriteString("Allowed doctypes as \"name:category\" pairs:\n")
 		b.WriteString(spec)
+		// The escape hatch is listed with the rest so it reads as one of the
+		// choices rather than as a caveat. It carries no category: the Go core
+		// supplies none for an unclassified document.
+		b.WriteString(",")
+		b.WriteString(doctypes.Unclassified)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Document text:\n")

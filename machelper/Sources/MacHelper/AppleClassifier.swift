@@ -21,6 +21,13 @@ import FoundationModels
 /// `doctype` to an `anyOf` of the supplied names, so the model is structurally
 /// incapable of inventing a category — constraint 8 is satisfied by the schema
 /// itself and re-checked against the catalog below.
+///
+/// The `anyOf` includes `unclassified` (`DocTypeCatalog.choices`). Without it
+/// the model cannot decline, so it answers with its nearest miss at the same
+/// confidence it would report for a genuine match — measured on real documents,
+/// business proposals came back as `contract` at 0.90 and design mockups as
+/// `certificate` at 0.90, with nothing ever returning unclassified. A schema
+/// that only permits real answers does not stop a wrong one; it guarantees it.
 enum AppleClassifier {
 
     /// Longest prompt we send. The on-device model has a modest context; the
@@ -121,9 +128,27 @@ enum AppleClassifier {
               !raw.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw HelperError(.classifyFailed, "the model returned no doctype")
         }
+        let answer = raw.trimmingCharacters(in: .whitespaces)
+
+        // The model declined. That is a successful classification of "I do not
+        // know", not a failure: it is reported with an empty category and zero
+        // confidence, which is what the Go core reads as a decline. Fields are
+        // dropped too — facts pulled from a document whose kind is unknown are
+        // the least trustworthy output this helper can produce.
+        if DocTypeCatalog.isUnclassified(answer) {
+            return ClassifyResponse(
+                contract: contractVersion,
+                engine: "apple",
+                doctype: DocTypeCatalog.unclassified,
+                category: "",
+                confidence: 0,
+                fields: [:]
+            )
+        }
+
         // Belt and braces: the schema already restricts the answer, but an
         // out-of-catalog string must never reach the vault (constraint 8).
-        guard let doctype = catalog.canonical(raw.trimmingCharacters(in: .whitespaces)),
+        guard let doctype = catalog.canonical(answer),
               let category = catalog.category(for: doctype) else {
             throw HelperError(.classifyFailed, "the model returned \(raw.debugDescription), which is not in the supplied doctype catalog")
         }
@@ -163,8 +188,8 @@ enum AppleClassifier {
     private static func makeSchema(catalog: DocTypeCatalog) throws -> GenerationSchema {
         let doctype = DynamicGenerationSchema(
             name: "DocType",
-            description: "The single document type that best describes the text.",
-            anyOf: catalog.names
+            description: "The single document type that best describes the text, or \"unclassified\" when none of them does.",
+            anyOf: catalog.choices
         )
         let field = DynamicGenerationSchema(
             name: "Field",
@@ -234,17 +259,34 @@ enum AppleClassifier {
         You classify documents for a personal document vault. All processing is on-device.
 
         Choose exactly one document type from this list, and nothing else:
-        \(catalog.names.joined(separator: ", "))
+        \(catalog.choices.joined(separator: ", "))
 
         Rules:
         - Pick the single best match. Never invent a type that is not in the list.
-        - confidence is your own certainty from 0.0 to 1.0. Use a low value when the
-          text is ambiguous, truncated or unreadable; the caller falls back to rules
-          when confidence is low, so an honest low score is more useful than a guess.
+        - "unclassified" means none of the other types describes this document. Choose
+          it whenever no listed type genuinely fits, and prefer it over a near miss: a
+          near miss files the document in the wrong place, where the mistake is
+          invisible, while "unclassified" simply asks the user. A document is not a
+          contract because it is business writing, not a certificate because it is
+          decorative, and not a receipt because it lists items. If you find yourself
+          stretching a type to fit, the answer is "unclassified".
+        - When the document names its own type in its title or letterhead -- "Tax
+          Invoice", "Statement of Account", "Boarding Pass", "Business Proposal" --
+          that wording is the strongest evidence there is. Match it to the listed
+          type that means the same thing, and do not override it with a type
+          suggested only by a phrase in the body such as "amount due".
+        - Prefer the most specific type that actually fits over a more general one.
+        - confidence is your own certainty from 0.0 to 1.0. Reserve 0.8 and above for a
+          document that plainly announces its own type. Use 0.5 or below when the text
+          is ambiguous, truncated or unreadable, or when two types fit about equally
+          well; the caller falls back to deterministic rules when confidence is low, so
+          an honest low score is more useful than a guess. Report 0.0 with
+          "unclassified".
         - fields holds at most a handful of short facts that are literally present in
           the text, such as amount, issuer, document_number, date or account. Copy
-          values verbatim. Never guess a value, and return no fields at all rather
-          than an invented one.
+          values verbatim. Never guess a value, never write a placeholder such as
+          "unknown", "n/a" or "none", and return no fields at all rather than an
+          invented one.
         """
     }
 

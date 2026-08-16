@@ -7,17 +7,38 @@
 // structured field extraction. This deliberately replaces an earlier
 // regex-only design that was an unbounded maintenance treadmill.
 //
-// Three invariants hold on every path through this package:
+// Four invariants hold on every path through this package:
 //
 //  1. No network at classify time. The Ollama backend re-validates that its
 //     endpoint is loopback on every call and never trusts config alone.
 //  2. Model output is never trusted. A returned doctype must exist in the
 //     resolved catalog, and the category always comes from the catalog, never
 //     from the model.
-//  3. Graceful degradation, never a hard failure. A missing, broken, slow or
+//  3. Every model tier can decline. The catalog is offered to the model with
+//     doctypes.Unclassified appended, and the prompt tells it to prefer that
+//     over a near miss. A model that cannot say "none of these" does not stop
+//     giving wrong answers -- it stops being able to give a right one, and
+//     reports the same high confidence either way.
+//  4. Graceful degradation, never a hard failure. A missing, broken, slow or
 //     lying backend degrades to rules, and an unconfident rules answer degrades
 //     to doctypes.Unclassified with zero confidence. Ingest is never failed by
 //     a classifier problem.
+//
+// # What confidence means, and why min_confidence is still 0.5
+//
+// A model's confidence is only interpretable once it has an alternative to
+// answering. While the schema offered nothing but real doctypes, every answer
+// was forced, and a forced guess scored the same 0.90 as a genuine match --
+// which made min_confidence a gate that nothing could fail. With
+// doctypes.Unclassified in the schema, "not one of these" has somewhere to go,
+// so a score above the gate now means the model both recognised the document
+// and chose it over declining.
+//
+// The default gate stays at 0.5 and nothing is rescaled. The escape hatch
+// removes the floor under the distribution rather than shifting it: genuine
+// matches still land high, and the answers that used to be forced up now come
+// back as a decline (0.0) or as a low score, on the correct side of the same
+// threshold. Raising the gate would only start rejecting real matches.
 //
 // # min_confidence applies to the rules tier too
 //
@@ -141,6 +162,15 @@ func (r Request) text() string {
 // actually produced it.
 func unclassified() Result {
 	return Result{DocType: doctypes.Unclassified, Confidence: 0, Engine: config.EngineRules}
+}
+
+// declined reports whether a backend answered doctypes.Unclassified -- "none of
+// the catalog fits". Every model tier offers that choice explicitly (the Apple
+// helper adds it to the guided-generation schema, Ollama to its system prompt),
+// so it is a real answer and must be told apart from a hallucinated doctype:
+// both fail validate, but only one of them is the model behaving well.
+func declined(res Result) bool {
+	return config.Slug(strings.TrimSpace(res.DocType)) == doctypes.Unclassified
 }
 
 // validate enforces Global Constraint 8 on a backend's raw answer: the doctype

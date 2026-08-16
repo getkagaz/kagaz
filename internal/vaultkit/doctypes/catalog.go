@@ -282,8 +282,50 @@ var builtins = []builtin{
 		},
 	},
 	{
+		// "proposal valid until" used to live here. It is the one phrase in this
+		// entry that a proposal is at least as likely to carry as a quotation,
+		// so it moved out when `proposal` was added; a keyword that fires on two
+		// doctypes halves the margin and therefore the rules confidence of both.
 		name: "quotation", category: "company",
-		keywords: []string{"quotation", "quote number", "proposal valid until", "estimate for"},
+		keywords: []string{"quotation", "quote number", "quote valid until", "estimate for", "prices quoted"},
+	},
+	{
+		// Business proposals and pitch decks. Every keyword is a two-word-or-more
+		// phrase that a proposal announces itself with; the bare word "proposal"
+		// is excluded because contracts, tenders and quotations all use it in
+		// passing.
+		name: "proposal", category: "company",
+		keywords: []string{"business proposal", "project proposal", "commercial proposal", "technical proposal", "pitch deck", "proposal prepared for", "proposal valid until"},
+		extract: map[string]string{
+			"prepared_for": `(?i)prepared\s+for[:\s]{1,4}([A-Z][A-Za-z0-9 &.,'\-]{2,60})`,
+			"prepared_by":  `(?i)prepared\s+by[:\s]{1,4}([A-Z][A-Za-z0-9 &.,'\-]{2,60})`,
+		},
+	},
+	{
+		// SOW / statement of work. "in scope" and "out of scope" are deliberately
+		// absent: contracts and specifications use both constantly.
+		name: "scope-of-work", category: "company",
+		keywords: []string{"scope of work", "statement of work", "scope of services", "work breakdown structure", "deliverables and milestones"},
+	},
+	{
+		// ISO and other management-system certificates. These are company
+		// documents; the personal `certificate` entry below covers course and
+		// achievement certificates, and the two are kept apart by category so a
+		// company's ISO 9001 certificate does not land in Personal.
+		name: "compliance-certificate", category: "company",
+		keywords: []string{"iso 9001", "iso 14001", "iso 45001", "iso 27001", "management system certificate", "certificate of conformity", "certificate of compliance", "quality management system", "certification body"},
+		extract: map[string]string{
+			"certificate_number": `(?i)certificate\s*(?:number|no\.?|#)[:\s]{0,4}([A-Z0-9][A-Z0-9\-/]{3,30})`,
+			"valid_until":        `(?i)(?:valid\s+until|expiry\s+date|expires\s+on)[:\s]{1,4}([0-9]{1,2}[ /.\-][A-Za-z0-9]{2,9}[ /.\-][0-9]{2,4})`,
+		},
+	},
+	{
+		// Tax-authority registration certificates (GST, VAT and equivalents).
+		// Non-locale-specific by design: the phrases below are the ones every
+		// GST/VAT regime shares. A country's own identifiers belong in the
+		// vault's own `doctypes:` block.
+		name: "tax-registration", category: "company",
+		keywords: []string{"gst registration", "vat registration", "tax registration certificate", "goods and services tax identification number", "value added tax registration", "taxpayer identification number"},
 	},
 	{
 		name: "annual-report", category: "company",
@@ -292,6 +334,10 @@ var builtins = []builtin{
 
 	// ---- personal --------------------------------------------------------
 	{
+		// Personal-scope certificates only: courses, training, achievements. A
+		// company's ISO or registration certificate is `compliance-certificate`
+		// or `tax-registration` under company, because filing those in Personal
+		// is exactly the mistake this split exists to prevent.
 		name: "certificate", category: "personal",
 		keywords: []string{"certificate of completion", "hereby certifies", "certificate of achievement"},
 	},
@@ -312,6 +358,15 @@ var builtins = []builtin{
 // Unclassified is the doctype assigned when nothing matches with confidence.
 // It is a real doctype so that ingest always has something to propose and lint
 // can report it, but it is never inferred from a category.
+//
+// It is deliberately *not* a catalog entry and deliberately absent from Spec():
+// it has no category, no keywords and no destination folder, and every consumer
+// of the catalog -- Resolve, Get, Names, CategoryOf, lint's vocabulary check --
+// would have to special-case it. The model tier still needs a way to decline,
+// so each semantic backend appends it to the choice list it shows the model
+// (see machelper's DocTypeCatalog.choices and classify's ollamaSystemPrompt)
+// and the Go side treats a returned "unclassified" as a decline rather than an
+// unknown doctype.
 const Unclassified = "unclassified"
 
 // Resolve builds the catalog for a vault: built-ins plus vault.yaml additions,
@@ -426,6 +481,10 @@ func (c *Catalog) Names() []string {
 
 // Spec renders the catalog as the compact "name:category,…" string passed to
 // the Swift helper so the model's output is constrained to real doctypes.
+//
+// Unclassified is not in it, and must not be: Spec is the catalog's wire form,
+// every entry carries a category, and Unclassified has none. The escape hatch
+// is added by the backend that shows the list to a model, not by the catalog.
 func (c *Catalog) Spec() string {
 	parts := make([]string, 0, len(c.types))
 	for _, t := range c.types {

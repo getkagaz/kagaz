@@ -101,6 +101,30 @@ func TestChainFallbackMatrix(t *testing.T) {
 			wantEngine:  config.EngineRules,
 		},
 		{
+			// The escape hatch. The model is offered doctypes.Unclassified
+			// alongside the catalog and answers that none of them fits; that is
+			// a real answer, not the unknown-doctype failure it resembles, and
+			// the deterministic tier still gets its turn.
+			name: "apple declines: rules still get their turn",
+			chain: func(t *testing.T) *Chain {
+				return chainWith(cat, config.EngineAuto, appleWith(t, "classify_declined.json", nil))
+			},
+			text:        invoiceText,
+			wantDocType: "invoice",
+			wantCat:     "financial",
+			wantEngine:  config.EngineRules,
+		},
+		{
+			name: "apple declines and rules find nothing: unclassified, never a near miss",
+			chain: func(t *testing.T) *Chain {
+				return chainWith(cat, config.EngineAuto, appleWith(t, "classify_declined.json", nil))
+			},
+			text:        noiseText,
+			wantDocType: doctypes.Unclassified,
+			wantEngine:  config.EngineRules,
+			wantZeroCnf: true,
+		},
+		{
 			name: "apple below min_confidence",
 			chain: func(t *testing.T) *Chain {
 				return chainWith(cat, config.EngineAuto, appleWith(t, "classify_low_confidence.json", nil))
@@ -310,6 +334,12 @@ func TestChainPassesCatalogSpecToTheHelper(t *testing.T) {
 	}
 	if gotStdin != invoiceText {
 		t.Errorf("stdin = %q, want the document text", gotStdin)
+	}
+	// The escape hatch is appended by whichever backend shows the list to a
+	// model, never by the catalog: it has no category, so it has no place in a
+	// "name:category" spec that the Go side also uses to resolve destinations.
+	if contains(gotSpec, doctypes.Unclassified) {
+		t.Errorf("--doctypes = %q, want it to carry only real, categorised doctypes", gotSpec)
 	}
 }
 

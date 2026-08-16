@@ -14,6 +14,7 @@ import (
 //
 //	engine=auto, apple available            -> apple, validated
 //	engine=auto, apple absent               -> rules
+//	semantic declines (doctypes.Unclassified) -> rules
 //	semantic doctype not in the catalog     -> rules
 //	semantic confidence < min_confidence    -> rules
 //	semantic category disagrees w/ catalog  -> catalog's category wins
@@ -112,6 +113,15 @@ func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request
 	if err != nil {
 		// Structured helper error, unknown contract, malformed JSON, timeout,
 		// non-zero exit: all the same from here.
+		return Result{}, false
+	}
+	if declined(raw) {
+		// The model used its escape hatch: it was offered doctypes.Unclassified
+		// alongside the catalog and answered that none of them fits. That is a
+		// deliberate, useful answer, not the unknown-doctype validation failure
+		// it would otherwise look like. Rules still get their turn -- a keyword
+		// or a machine-readable zone can recognise a document the model could
+		// not -- and an unmatched rules tier lands on Unclassified anyway.
 		return Result{}, false
 	}
 	res, ok := validate(cat, raw, c.MinConfidence)
