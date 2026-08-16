@@ -176,13 +176,18 @@ that keeps proposals current without you needing to remember to run
 
 ## `kagaz mcp`
 
-Starts the stdio MCP server (JSON-RPC 2.0): `initialize`, `tools/list`,
-`tools/call` for `find`, `ingest_propose`, `tag`, `resolve_for_send`. Each
-tool is a thin wrapper over the same vaultkit calls the CLI itself uses,
-returning the same JSON shapes — an MCP client and a `kagaz --json` caller
-see identical data. `resolve_for_send` preserves the confidential gate
-exactly as described above: it cannot auto-confirm, and returns the same
-`confirmation_required` structure. See
+**Not implemented in this build.** `kagaz mcp` prints the planned tool surface
+and exits 1; there is no server to connect to yet. Until it lands, an agent
+should drive the CLI directly with `--json`, which is the same data by
+construction.
+
+The planned surface is a stdio MCP server (JSON-RPC 2.0): `initialize`,
+`tools/list`, `tools/call` for `find`, `ingest_propose`, `tag`,
+`resolve_for_send`. Each tool will be a thin wrapper over the same vaultkit
+calls the CLI itself uses, returning the same JSON shapes — an MCP client and a
+`kagaz --json` caller will see identical data. `resolve_for_send` will preserve
+the confidential gate exactly as described above: it cannot auto-confirm, and
+returns the same `confirmation_required` structure. See
 [docs/agents.md](agents.md) for how an agent is expected to use this.
 
 ## `kagaz completion`

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/audit"
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
@@ -27,10 +28,19 @@ type MovePayload struct {
 	// Derived reports that the destination came from the vault's conventions
 	// rather than from the command line.
 	Derived bool `json:"derived"`
+	// Outside reports that the destination lies outside the vault root, so the
+	// document leaves the vault kagaz manages. It is only ever true when the
+	// user passed --allow-outside-vault.
+	Outside bool `json:"outside_vault"`
+	// VaultRoot is the root the destination was judged against.
+	VaultRoot string `json:"vault_root,omitempty"`
 }
 
 func newMoveCommand(rt *Runtime) *cobra.Command {
-	var mut mutationFlags
+	var (
+		mut          mutationFlags
+		allowOutside bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "move <path> [destination]",
@@ -64,6 +74,19 @@ func newMoveCommand(rt *Runtime) *cobra.Command {
 				}
 				payload.Derived = true
 			}
+
+			// A document manager does not file documents out of the vault it
+			// manages without being told to, twice: once by naming a path
+			// outside it, and once by saying that is deliberate.
+			payload.VaultRoot = cfg.VaultRoot
+			payload.Outside = !withinVault(cfg.VaultRoot, dst)
+			if payload.Outside && !allowOutside {
+				return fmt.Errorf("destination %s is outside the vault (%s); "+
+					"kagaz refuses to file a document out of the vault it manages. "+
+					"Give a destination inside the vault, or pass --allow-outside-vault to do this deliberately",
+					dst, cfg.VaultRoot)
+			}
+
 			if dst == src {
 				payload.Moves = []MoveRecord{}
 				payload.Skipped = []MoveRecord{{From: src, To: dst}}
@@ -105,20 +128,39 @@ func newMoveCommand(rt *Runtime) *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&allowOutside, "allow-outside-vault", false,
+		"permit a destination outside the vault root: the document leaves the vault and kagaz stops managing it (it stays reversible with `kagaz rollback`)")
 	mut.register(cmd)
 	return cmd
 }
 
 // destinationPath resolves a user-supplied destination: an existing directory
 // means "into this folder under the source's own name".
+//
+// A relative destination is resolved against the VAULT ROOT first and only then
+// against the working directory. `kagaz move doc.pdf Financial` run from a home
+// directory means the vault's Financial folder — the vault is the subject of
+// every kagaz command, so it is the frame of reference for a bare folder name.
+// The working directory remains a fallback so that `kagaz move a.pdf ./b.pdf`
+// inside a directory still means what it looks like.
 func destinationPath(cfg *config.Config, arg, base string) (string, error) {
-	abs := arg
-	if !filepath.IsAbs(abs) {
-		if _, err := os.Stat(abs); err != nil {
-			abs = filepath.Join(cfg.VaultRoot, filepath.FromSlash(arg))
+	expanded := config.ExpandHome(arg)
+	abs := expanded
+	if !filepath.IsAbs(expanded) {
+		inVault := filepath.Join(cfg.VaultRoot, filepath.FromSlash(expanded))
+		switch _, err := os.Stat(inVault); {
+		case err == nil:
+			abs = inVault
+		default:
+			if _, err := os.Stat(expanded); err != nil {
+				// Neither resolves to something that exists: the vault is
+				// still the home of a kagaz destination, so a new path is
+				// created there rather than beside the shell.
+				abs = inVault
+			}
 		}
 	}
-	abs, err := filepath.Abs(config.ExpandHome(abs))
+	abs, err := filepath.Abs(abs)
 	if err != nil {
 		return "", err
 	}
@@ -126,6 +168,34 @@ func destinationPath(cfg *config.Config, arg, base string) (string, error) {
 		return filepath.Join(abs, base), nil
 	}
 	return abs, nil
+}
+
+// withinVault reports whether path lies at or under root. Both sides have their
+// symlinks resolved as far as they exist, because /tmp is a symlink on macOS
+// and a vault under it would otherwise look like it was outside itself.
+func withinVault(root, path string) bool {
+	rel, err := filepath.Rel(resolveExisting(root), resolveExisting(path))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolveExisting resolves the symlinks of the deepest existing ancestor of
+// path and re-attaches the part that does not exist yet.
+func resolveExisting(path string) string {
+	rest := ""
+	for cur := filepath.Clean(path); ; {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(path)
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // conventionalPath derives where a document belongs from its own facts: the
@@ -178,6 +248,10 @@ func previewMove(w io.Writer, payload any) error {
 	if p.Derived {
 		fmt.Fprintln(w, "(destination derived from the vault's conventions)")
 	}
+	if p.Outside {
+		fmt.Fprintf(w, "OUTSIDE THE VAULT: this destination is not under %s.\n"+
+			"The document leaves the vault and kagaz will no longer find, lint or tag it.\n", p.VaultRoot)
+	}
 	return nil
 }
 
@@ -191,6 +265,9 @@ func humanMove(w io.Writer, payload any) error {
 	}
 	for _, m := range p.Skipped {
 		fmt.Fprintf(w, "skipped %s\n", m.From)
+	}
+	if p.Outside {
+		fmt.Fprintf(w, "this document is now outside the vault (%s) and kagaz no longer manages it\n", p.VaultRoot)
 	}
 	if p.Manifest != "" {
 		fmt.Fprintf(w, "manifest: %s (reverse with `kagaz rollback %s`)\n", p.Manifest, filepath.Base(p.Manifest))

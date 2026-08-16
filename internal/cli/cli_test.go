@@ -3,10 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 )
 
 // run executes the CLI with args and returns stdout, stderr and the exit code.
@@ -398,6 +402,297 @@ func TestErrorsAreReportedAsAJSONEnvelope(t *testing.T) {
 	obj := decode(t, errw.String())
 	if obj["status"] != StatusError || obj["message"] == nil {
 		t.Fatalf("error envelope: %s", errw.String())
+	}
+}
+
+// runStdin executes the CLI with the given stdin, so that tests can reproduce
+// what launchd, cron and `brew services` actually hand a process.
+func runStdin(t *testing.T, in io.Reader, args ...string) (string, string, int) {
+	t.Helper()
+	var out, errw bytes.Buffer
+	code := Main("1.2.3", args, &out, &errw, in)
+	return out.String(), errw.String(), code
+}
+
+// devNull opens /dev/null as a real *os.File, which is what makes it a
+// character device and therefore the case os.ModeCharDevice alone gets wrong.
+func devNull(t *testing.T) *os.File {
+	t.Helper()
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("no %s on this platform: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+func TestDevNullStdinIsNotInteractive(t *testing.T) {
+	rt := NewRuntime("1.2.3", io.Discard, io.Discard, devNull(t))
+	if rt.Interactive() {
+		t.Fatal("stdin redirected from /dev/null was reported as a terminal")
+	}
+	if _, err := rt.Prompt("q? "); err == nil {
+		t.Fatal("Prompt succeeded on a non-terminal stdin")
+	}
+}
+
+// TestMutatingCommandWithNullStdinIsDiagnosable is the launchd/cron/CI case:
+// `kagaz tag ... < /dev/null` must refuse, say why, and exit non-zero. Exiting
+// non-zero with no output at all leaves a scheduled job with nothing to report.
+func TestMutatingCommandWithNullStdinIsDiagnosable(t *testing.T) {
+	vault := initDemo(t)
+	doc := firstDocument(t, vault)
+
+	out, errw, code := runStdin(t, devNull(t), "--vault", vault, "tag", "--add", "to-action", doc)
+	if code == ExitOK {
+		t.Fatalf("a mutating command with no terminal exited 0: %s", out)
+	}
+	if strings.TrimSpace(out+errw) == "" {
+		t.Fatalf("exit %d with no output whatsoever on stdout or stderr", code)
+	}
+	if !strings.Contains(out+errw, "--yes") {
+		t.Fatalf("the message does not say how to proceed:\nstdout: %s\nstderr: %s", out, errw)
+	}
+	if _, err := os.Stat(doc); err != nil {
+		t.Fatalf("the document moved: %v", err)
+	}
+}
+
+func TestErrorResponseIsNeverSilent(t *testing.T) {
+	var out, errw bytes.Buffer
+	rt := NewRuntime("1.2.3", &out, &errw, strings.NewReader(""))
+	err := rt.Emit(ErrorResponse("move", errors.New("something broke"), "try this instead", ExitFailure))
+	if err == nil {
+		t.Fatal("an error response exited zero")
+	}
+	if !strings.Contains(errw.String(), "something broke") || !strings.Contains(errw.String(), "try this instead") {
+		t.Fatalf("error rendering lost the message: %q", errw.String())
+	}
+}
+
+// TestDoctorStatusMatchesTheVerdict is the contract an agent branches on:
+// `status` must never say ok while the process exits non-zero.
+func TestDoctorStatusMatchesTheVerdict(t *testing.T) {
+	t.Run("healthy vault", func(t *testing.T) {
+		vault := initDemo(t)
+		out, _, code := run(t, "--vault", vault, "doctor", "--json")
+		if code != ExitOK {
+			t.Skipf("this machine's doctor is not clean, nothing to assert here: %s", out)
+		}
+		if decode(t, out)["status"] != StatusOK {
+			t.Fatalf("status on a healthy vault: %s", out)
+		}
+	})
+	t.Run("broken vault", func(t *testing.T) {
+		dir := t.TempDir()
+		vault := filepath.Join(dir, "vault.yaml")
+		if err := os.WriteFile(vault, []byte("version: 1\nvault_root: "+filepath.Join(dir, "gone")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, errw, code := run(t, "--vault", vault, "doctor", "--json")
+		if code == ExitOK {
+			t.Fatalf("doctor exited 0 against a vault whose root does not exist: %s\n%s", out, errw)
+		}
+		obj := decode(t, out+errw)
+		if obj["status"] == StatusOK {
+			t.Fatalf("doctor reported status=ok while exiting %d: %s", code, out+errw)
+		}
+		if obj["status"] != StatusError {
+			t.Fatalf("status = %v, want %q: %s", obj["status"], StatusError, out+errw)
+		}
+		if obj["ok"] != false {
+			t.Fatalf("ok = %v: %s", obj["ok"], out+errw)
+		}
+	})
+	t.Run("human summary always states a verdict", func(t *testing.T) {
+		var b bytes.Buffer
+		payload := DoctorPayload{OK: false, Counts: map[string]int{CheckFail: 2}}
+		if err := humanDoctor(&b, payload); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "core function is NOT available") {
+			t.Fatalf("a failing doctor printed no verdict: %q", b.String())
+		}
+	})
+}
+
+// TestMoveResolvesRelativeDestinationsAgainstTheVaultFirst pins the resolution
+// order: the vault root, then the working directory.
+func TestMoveResolvesRelativeDestinationsAgainstTheVaultFirst(t *testing.T) {
+	work := t.TempDir()
+	vaultRoot := filepath.Join(work, "vault")
+	cwdDir := filepath.Join(work, "cwd")
+	for _, d := range []string{filepath.Join(vaultRoot, "Financial"), filepath.Join(cwdDir, "Financial")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{VaultRoot: vaultRoot}
+
+	restore, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(restore)
+	// On macOS /var is a symlink to /private/var, so ask the OS what the
+	// working directory is actually called rather than assuming.
+	cwdDir, err = os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both exist: the vault wins, because the vault is the subject of the
+	// command. The reviewer's `kagaz move doc.pdf Financial` from ~ must not
+	// file into ~/Financial.
+	got, err := destinationPath(cfg, "Financial", "doc.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(vaultRoot, "Financial", "doc.pdf"); got != want {
+		t.Fatalf("relative destination resolved to %s, want %s", got, want)
+	}
+
+	// Only the working directory has it: that is the fallback.
+	if err := os.MkdirAll(filepath.Join(cwdDir, "Scratch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err = destinationPath(cfg, "Scratch", "doc.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(cwdDir, "Scratch", "doc.pdf"); got != want {
+		t.Fatalf("cwd fallback resolved to %s, want %s", got, want)
+	}
+
+	// Neither exists: a new path belongs in the vault.
+	got, err = destinationPath(cfg, "Nowhere/x.pdf", "doc.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(vaultRoot, "Nowhere", "x.pdf"); got != want {
+		t.Fatalf("unresolvable destination became %s, want %s", got, want)
+	}
+}
+
+func TestMoveRefusesADestinationOutsideTheVault(t *testing.T) {
+	vault := initDemo(t)
+	doc := firstDocument(t, vault)
+	outside := filepath.Join(t.TempDir(), "outside", "x.pdf")
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errw, code := run(t, "--vault", vault, "move", "--yes", doc, outside)
+	if code == ExitOK {
+		t.Fatalf("a document was filed out of the vault without an opt-out: %s\n%s", out, errw)
+	}
+	if !strings.Contains(out+errw, "outside the vault") || !strings.Contains(out+errw, "--allow-outside-vault") {
+		t.Fatalf("the refusal does not name the opt-out:\n%s\n%s", out, errw)
+	}
+	if _, err := os.Stat(doc); err != nil {
+		t.Fatalf("the document moved despite the refusal: %v", err)
+	}
+	if _, err := os.Stat(outside); err == nil {
+		t.Fatal("the destination outside the vault was written")
+	}
+
+	// The opt-out is a real opt-out, and it is reported in the payload.
+	out, errw, code = run(t, "--vault", vault, "move", "--yes", "--allow-outside-vault", "--json", doc, outside)
+	if code != ExitOK {
+		t.Fatalf("--allow-outside-vault exited %d: %s\n%s", code, out, errw)
+	}
+	if decode(t, out)["outside_vault"] != true {
+		t.Fatalf("the payload does not report the destination as outside the vault: %s", out)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("--allow-outside-vault did not move the document: %v", err)
+	}
+	var preview bytes.Buffer
+	if err := previewMove(&preview, MovePayload{Outside: true, VaultRoot: "/v"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview.String(), "OUTSIDE THE VAULT") {
+		t.Fatalf("the preview does not state that the destination is outside the vault: %q", preview.String())
+	}
+}
+
+func TestUnknownCommandWithJSONProducesAnEnvelope(t *testing.T) {
+	out, errw, code := run(t, "nosuchcommand", "--json")
+	if code != ExitUsage {
+		t.Fatalf("exit %d, want %d", code, ExitUsage)
+	}
+	obj := decode(t, out+errw)
+	if obj["status"] != StatusError || obj["message"] == nil {
+		t.Fatalf("unknown command did not produce an error envelope: %s%s", out, errw)
+	}
+}
+
+func TestRollbackReportsSkippedRowsInThePayload(t *testing.T) {
+	vault := initDemo(t)
+	src := filepath.Join(t.TempDir(), "globex receipt.pdf")
+	if err := os.WriteFile(src, renderPDF("Receipt", []string{
+		"GLOBEX RETAIL", "", "TRANSACTION RECEIPT", "Receipt Number: GX-99002",
+		"Date: 02/02/2026", "Customer: Sam Rao", "", "Total: 41.00",
+		"Payment received. Thank you for your payment.",
+	}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errw, code := run(t, "--vault", vault, "ingest", "--select", "all", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("ingest exited %d: %s\n%s", code, out, errw)
+	}
+	manifest, _ := decode(t, out)["manifest"].(string)
+	if manifest == "" {
+		t.Fatalf("no manifest: %s", out)
+	}
+	if _, errw, code := run(t, "--vault", vault, "rollback", "--yes", "--json", manifest); code != ExitOK {
+		t.Fatalf("first rollback exited %d: %s", code, errw)
+	}
+	// The second run reverses nothing. It must say so in the payload, not only
+	// in a warning string that --json throws away.
+	out, errw, code = run(t, "--vault", vault, "rollback", "--yes", "--json", manifest)
+	if code != ExitOK {
+		t.Fatalf("second rollback exited %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	skipped, _ := obj["skipped"].([]any)
+	if len(skipped) == 0 {
+		t.Fatalf("re-running rollback reported no skipped rows: %s", out)
+	}
+	restored, _ := obj["restored"].([]any)
+	if len(restored) != 0 {
+		t.Fatalf("re-running rollback claimed to restore %d row(s): %s", len(restored), out)
+	}
+}
+
+func TestIngestGuidanceNamesTheCauseAndAWorkingNextStep(t *testing.T) {
+	vault := initDemo(t)
+	src := filepath.Join(t.TempDir(), "random notes.txt")
+	if err := os.WriteFile(src, []byte("just some words\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errw, code := run(t, "--vault", vault, "ingest", "--propose-only", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	guidance, _ := obj["guidance"].([]any)
+	if len(guidance) == 0 {
+		t.Skipf("this machine classified the .txt, so there is no dead end to check: %s", out)
+	}
+	g := guidance[0].(map[string]any)
+	next, _ := g["next_step"].(string)
+	if !strings.Contains(next, "<destination>") {
+		t.Fatalf("the suggested next step is the destination-less form that fails: %q", next)
+	}
+	if cause, _ := g["cause"].(string); !strings.Contains(cause, "no text extractor") {
+		t.Fatalf("the cause does not name the missing extractor: %q", cause)
+	}
+	if got := tidyReasons("no text extracted: no text extracted"); got != "no text extracted" {
+		t.Fatalf("doubled message not collapsed: %q", got)
 	}
 }
 

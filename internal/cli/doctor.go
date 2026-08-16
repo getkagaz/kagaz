@@ -67,12 +67,15 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			payload := runDoctor(rt)
-			exit := ExitOK
+			// The envelope status is the verdict, not a report that the checks
+			// ran: an agent branching on `status` must never read "ok" off a
+			// run that is simultaneously exiting non-zero.
+			status, exit := StatusOK, ExitOK
 			if !payload.OK {
-				exit = ExitFailure
+				status, exit = StatusError, ExitFailure
 			}
 			return rt.Emit(&Response{
-				Command: "doctor", Status: StatusOK, Payload: payload, Human: humanDoctor, Exit: exit,
+				Command: "doctor", Status: status, Payload: payload, Human: humanDoctor, Exit: exit,
 			})
 		},
 	}
@@ -305,8 +308,13 @@ func humanDoctor(w io.Writer, payload any) error {
 	}
 	fmt.Fprintf(w, "\n%d ok, %d warning(s), %d failure(s)\n",
 		p.Counts[CheckOK], p.Counts[CheckWarn], p.Counts[CheckFail])
+	// The verdict is printed on every run, not only a passing one. A summary
+	// that simply stops after the counts leaves the reader to work out whether
+	// the machine is usable, which is the one question doctor exists to answer.
 	if p.OK {
 		fmt.Fprintln(w, "core function is available")
+	} else {
+		fmt.Fprintf(w, "core function is NOT available: fix the %d FAIL row(s) above\n", p.Counts[CheckFail])
 	}
 	return nil
 }

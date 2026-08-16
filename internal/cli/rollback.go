@@ -77,7 +77,7 @@ func newRollbackCommand(rt *Runtime) *cobra.Command {
 				return err
 			}
 			payload.Restored = records(res.Moved)
-			payload.Skipped = records(res.Skipped)
+			payload.Skipped = unreversed(man, res)
 
 			log := rt.Audit(cfg)
 			paths := make([]string, 0, len(payload.Restored))
@@ -99,6 +99,32 @@ func newRollbackCommand(rt *Runtime) *cobra.Command {
 	}
 	mut.register(cmd)
 	return cmd
+}
+
+// unreversed lists the manifest rows a rollback did not put back.
+//
+// move.Engine.Rollback drops a row that is already reversed (its file is no
+// longer at the post-operation path, or the original path is occupied) before
+// it plans anything, reporting it as a warning string only. A warning string is
+// invisible to `--json`, so the rows are recovered here from the manifest
+// itself: anything the engine neither moved nor listed as skipped was skipped.
+// Re-running rollback on an already-reversed manifest must say so in the
+// payload, not just in prose.
+func unreversed(man *move.Manifest, res *move.Result) []MoveRecord {
+	out := records(res.Skipped)
+	done := map[string]bool{}
+	for _, op := range res.Moved {
+		done[op.Src] = true
+	}
+	for _, op := range res.Skipped {
+		done[op.Src] = true
+	}
+	for _, row := range man.Rows {
+		if !done[row.CurrentPath] {
+			out = append(out, MoveRecord{From: row.CurrentPath, To: row.OriginalPath})
+		}
+	}
+	return out
 }
 
 // records converts engine ops into the reported shape.

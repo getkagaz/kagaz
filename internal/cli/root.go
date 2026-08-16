@@ -113,6 +113,21 @@ func isUsageError(err error) bool {
 	return false
 }
 
+// requestedJSON reports whether --json appears in the raw arguments. It is
+// consulted only on the error path, where cobra may never have parsed the
+// flags; a successfully parsed run uses rt.JSON.
+func requestedJSON(args []string) bool {
+	for _, a := range args {
+		if a == "--json" || a == "--json=true" {
+			return true
+		}
+		if a == "--" {
+			return false
+		}
+	}
+	return false
+}
+
 // reportError prints a failure once, in whichever format was asked for.
 func reportError(rt *Runtime, root *cobra.Command, args []string, err error, code int) {
 	if err == nil {
@@ -122,7 +137,12 @@ func reportError(rt *Runtime, root *cobra.Command, args []string, err error, cod
 	if cmd, _, ferr := root.Find(args); ferr == nil && cmd != nil {
 		name = cmd.Name()
 	}
-	if rt.JSON {
+	// An unknown *command* fails cobra's lookup before the persistent flags are
+	// parsed, so rt.JSON is still false even though --json was asked for. The
+	// flag is read off the raw arguments here so that an unknown command and an
+	// unknown flag produce the same envelope; a JSON caller that gets plain
+	// text has no way to read the failure.
+	if rt.JSON || requestedJSON(args) {
 		data, encErr := Envelope(ErrorResponse(name, err, "", code))
 		if encErr == nil {
 			fmt.Fprint(rt.Err, string(data))

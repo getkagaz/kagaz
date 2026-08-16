@@ -168,11 +168,31 @@ type errorPayload struct {
 }
 
 // ErrorResponse builds the envelope emitted when a command fails.
+//
+// It always carries a human renderer. An error response without one is an
+// error nobody sees: Emit skips a nil renderer, so a failure emitted that way
+// would exit non-zero having printed nothing at all — the worst possible
+// outcome for a scripted run, which then has neither output nor a clue.
 func ErrorResponse(command string, err error, hint string, exit int) *Response {
 	return &Response{
 		Command: command,
 		Status:  StatusError,
 		Payload: errorPayload{Message: err.Error(), Hint: hint},
+		Human:   humanError,
 		Exit:    exit,
 	}
+}
+
+// humanError renders an error payload the way the rest of the CLI reports
+// failures: `kagaz: <message>`, with the hint on its own line.
+func humanError(w io.Writer, payload any) error {
+	p, ok := payload.(errorPayload)
+	if !ok {
+		return fmt.Errorf("error: unexpected payload %T", payload)
+	}
+	fmt.Fprintf(w, "kagaz: %s\n", p.Message)
+	if p.Hint != "" {
+		fmt.Fprintf(w, "  hint: %s\n", p.Hint)
+	}
+	return nil
 }

@@ -15,6 +15,9 @@ import (
 // VaultEnv names the environment variable that supplies a default --vault.
 const VaultEnv = "KAGAZ_VAULT"
 
+// maxPromptBytes caps how much of stdin a single prompt will read.
+const maxPromptBytes = 64 << 10
+
 // Runtime is the state every command shares: the streams to talk on, the
 // persistent flags, and the lazily-loaded vault config.
 type Runtime struct {
@@ -86,7 +89,19 @@ func (r *Runtime) SetConfig(cfg *config.Config) { r.cfg = cfg }
 // Audit opens the vault's append-only log.
 func (r *Runtime) Audit(cfg *config.Config) *audit.Log { return audit.Open(cfg.AuditLogPath()) }
 
+// nonTTYDevices are character devices that are emphatically not terminals but
+// that carry os.ModeCharDevice all the same. `< /dev/null` is the standard
+// stdin of launchd, cron, CI and `brew services`, and `/dev/zero` never ends:
+// treating either as a terminal makes a scripted kagaz prompt into the void.
+var nonTTYDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom"}
+
 // Interactive reports whether a prompt can be shown: stdin must be a terminal.
+//
+// A terminal is detected by stat rather than by golang.org/x/term, which is not
+// a dependency of this module — not even an indirect one — and Global
+// Constraint 11 forbids adding a new one. os.ModeCharDevice alone is not
+// enough, because the null-ish devices set it too, so those are excluded by
+// identity (os.SameFile, not by name: stdin's own name is unreliable).
 func (r *Runtime) Interactive() bool {
 	if r.interactive != nil {
 		return r.interactive()
@@ -99,7 +114,15 @@ func (r *Runtime) Interactive() bool {
 	if err != nil {
 		return false
 	}
-	return st.Mode()&os.ModeCharDevice != 0
+	if st.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	for _, dev := range nonTTYDevices {
+		if devSt, err := os.Stat(dev); err == nil && os.SameFile(st, devSt) {
+			return false
+		}
+	}
+	return true
 }
 
 // Printf writes a human-facing line to stdout, unless --json or --quiet.
@@ -124,7 +147,9 @@ func (r *Runtime) Prompt(question string) (string, error) {
 		return "", errors.New("cannot prompt: stdin is not a terminal (re-run with --yes to confirm, or --propose-only to preview)")
 	}
 	fmt.Fprint(r.Out, question)
-	reader := bufio.NewReader(r.In)
+	// Bounded: an answer is a word, and a stdin that never delivers a newline
+	// must fail rather than grow a buffer until the process is killed.
+	reader := bufio.NewReader(io.LimitReader(r.In, maxPromptBytes))
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
@@ -162,10 +187,23 @@ func (r *Runtime) Emit(res *Response) error {
 	for _, w := range res.Warnings {
 		r.Warnf("warning: %s\n", w)
 	}
-	if res.Human != nil {
-		if err := res.Human(r.Out, res.Payload); err != nil {
+	// An error payload is reported on stderr, like every other failure the CLI
+	// reports, so that `kagaz ... > file` still shows the human the problem.
+	// A command whose own report happens to be a failing verdict (doctor, mcp)
+	// keeps its report on stdout: the report is what was asked for.
+	dst := r.Out
+	if _, isErr := res.Payload.(errorPayload); isErr {
+		dst = r.Err
+	}
+	switch {
+	case res.Human != nil:
+		if err := res.Human(dst, res.Payload); err != nil {
 			return err
 		}
+	case res.Exit != ExitOK:
+		// No renderer and a non-zero exit: say something anyway. Exiting
+		// non-zero in silence is undiagnosable.
+		fmt.Fprintf(r.Err, "kagaz: %s: %s (exit %d)\n", res.Command, res.Status, res.Exit)
 	}
 	return exitFor(res)
 }
