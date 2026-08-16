@@ -411,51 +411,39 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error
 	return prop, nil
 }
 
-// SharedMarker is the filename stand-in for the owner of a document nobody
-// could be matched to, used only when the vault's filename pattern makes
-// {Names} a required field and the category defines no shared folder name.
-const SharedMarker = "Shared"
-
-// destination builds the proposed path: the directory from the document's real
-// owners, and the filename from the same document.
+// destination builds the proposed path for doc, and explains the one case a
+// user would otherwise be surprised by.
 //
-// The two are rendered separately for one case: an unowned document under a
-// filename pattern where {Names} is required. The folder is genuinely the
-// category's shared (or flat) location, but the filename cannot be blank
-// there, so it borrows the category's shared name -- "Shared" as a last
-// resort. The substitution only ever touches the *name*, never the folder, and
-// it returns an explanation so the preview says what happened rather than
-// quietly labelling somebody's insurance policy as shared.
+// An unowned document under a filename pattern where {Names} is required takes
+// the category's shared label in its *name* as well as its folder.
+// conventions.Render owns that substitution, so the name ingest proposes is
+// exactly the name lint and search read back as unowned -- ingest keeps no
+// marker of its own to drift from the grammar. All that is left here is to say
+// what happened, rather than quietly labelling somebody's insurance policy as
+// shared. A category with no shared label makes Render fail loudly instead,
+// and the caller turns that into a skip with the message Render wrote.
 func (p *Pipeline) destination(doc conventions.Doc) (string, string, error) {
-	dir, err := p.Names.Dir(doc)
+	dest, err := p.Names.Path(doc)
 	if err != nil {
 		return "", "", err
 	}
-	name, err := p.Names.Render(doc)
-	if err == nil {
-		return filepath.Join(dir, name), "", nil
-	}
 	if len(doc.Owners) > 0 {
-		return "", "", err
+		return dest, "", nil
 	}
-
-	marker := SharedMarker
-	if cat, ok := p.Cfg.CategoryFor(doc.Category); ok && cat.Shared != "" {
-		if cleaned := p.Names.Word(cat.Shared); cleaned != "" {
-			marker = cleaned
+	cat, ok := p.Cfg.CategoryFor(doc.Category)
+	if !ok || cat.Shared == "" {
+		return dest, "", nil
+	}
+	label := p.Names.Word(cat.Shared)
+	base := strings.TrimSuffix(filepath.Base(dest), filepath.Ext(dest))
+	for _, field := range strings.Split(base, p.Cfg.Filename.FieldSep) {
+		if field != label {
+			continue
 		}
+		return dest, fmt.Sprintf("no owner matched, and this vault's filename pattern requires a name, so the file name uses %q; "+
+			"the folder is still the category's shared/unowned location. Set an owner before approving if that is wrong.", label), nil
 	}
-	named := doc
-	named.Owners = []string{marker}
-	name, err2 := p.Names.Render(named)
-	if err2 != nil {
-		// Report the original problem: the marker was a repair attempt, not
-		// the cause.
-		return "", "", err
-	}
-	why := fmt.Sprintf("no owner matched, and this vault's filename pattern requires a name, so the file name uses %q; "+
-		"the folder is still the category's shared/unowned location. Set an owner before approving if that is wrong.", marker)
-	return filepath.Join(dir, name), why, nil
+	return dest, "", nil
 }
 
 // proposeTags builds the tag set for a proposal and runs it through the

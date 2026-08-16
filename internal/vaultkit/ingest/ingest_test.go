@@ -65,10 +65,15 @@ structure:
     layout: "{Owner}"
   insurance:
     path: Insurance
+    shared: _Household
     layout: "{Owner}"
 classify:
   engine: rules
 `
+
+// noSharedVaultYAML is testVaultYAML with insurance's `shared:` label removed,
+// so a category that cannot name an unowned document can be exercised.
+var noSharedVaultYAML = strings.Replace(testVaultYAML, "    shared: _Household\n", "", 1)
 
 // fixedNow is the clock every test runs on, so a year inferred from an mtime
 // and a manifest filename are both deterministic.
@@ -78,6 +83,13 @@ var fixedNow = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 // rules classifier, real move engine -- over a temporary vault, with only the
 // OCR tier faked.
 func testPipeline(t *testing.T, sources map[string]string) (*Pipeline, string, string) {
+	t.Helper()
+	return testPipelineYAML(t, testVaultYAML, sources)
+}
+
+// testPipelineYAML is testPipeline over a caller-supplied vault.yaml, so a test
+// can vary the structure without a second copy of this scaffolding.
+func testPipelineYAML(t *testing.T, vaultYAML string, sources map[string]string) (*Pipeline, string, string) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -89,7 +101,7 @@ func testPipeline(t *testing.T, sources map[string]string) (*Pipeline, string, s
 		}
 	}
 
-	cfg, err := config.Parse([]byte(strings.ReplaceAll(testVaultYAML, "%ROOT%", vault)))
+	cfg, err := config.Parse([]byte(strings.ReplaceAll(vaultYAML, "%ROOT%", vault)))
 	if err != nil {
 		t.Fatalf("config.Parse: %v", err)
 	}
@@ -313,7 +325,13 @@ func TestAnalyzeProposalContents(t *testing.T) {
 		}
 	})
 
-	t.Run("policy: no owner matched, filed unowned", func(t *testing.T) {
+	// This subtest previously asserted that the file name borrowed the literal
+	// constant "Shared" -- ingest's own marker, which nothing in vault.yaml
+	// said and which lint then read back as a person. The name now comes from
+	// the category's configured `shared:` label via conventions.Render, so the
+	// assertion is on the vault's label ("_Household" -> "Household") and, more
+	// importantly, on the name reading back as unowned.
+	t.Run("policy: no owner matched, filed under the category's shared label", func(t *testing.T) {
 		got := find(t, props, "globex policy.pdf")
 		if got.Skip {
 			t.Fatalf("skipped: %s", got.SkipReason)
@@ -330,23 +348,32 @@ func TestAnalyzeProposalContents(t *testing.T) {
 		if !strings.Contains(got.Why.Owners[0].Detail, "Alex Rao") {
 			t.Errorf("the no-owner explanation should name who was looked for: %q", got.Why.Owners[0].Detail)
 		}
-		// The filename pattern requires {Names}, so the name borrows the
-		// shared marker -- and the preview has to say so.
-		if !strings.Contains(filepath.Base(got.Dest), SharedMarker) {
-			t.Errorf("file name = %q, want the shared marker", filepath.Base(got.Dest))
+		// The filename pattern requires {Names}, so the name carries the
+		// category's own shared label -- and the preview has to say so.
+		if !strings.Contains(filepath.Base(got.Dest), "Household") {
+			t.Errorf("file name = %q, want the category's configured shared label", filepath.Base(got.Dest))
 		}
 		explained := false
 		for _, r := range got.Why.Owners {
-			if strings.Contains(r.Detail, SharedMarker) {
+			if strings.Contains(r.Detail, "Household") {
 				explained = true
 			}
 		}
 		if !explained {
-			t.Errorf("the shared-marker substitution is not explained: %+v", got.Why.Owners)
+			t.Errorf("the shared-label substitution is not explained: %+v", got.Why.Owners)
 		}
-		// insurance has no shared folder, so an unowned document lands
-		// directly in the category.
-		want := filepath.Join(vault, "Insurance")
+		// The name ingest proposes must be the name the grammar reads back as
+		// unowned. That equality is the whole point of Render owning the
+		// substitution.
+		back, ok := p.Names.Parse(filepath.Base(got.Dest))
+		if !ok {
+			t.Fatalf("%s did not parse back", filepath.Base(got.Dest))
+		}
+		if len(back.Owners) != 0 {
+			t.Errorf("the proposed name reads back with owners %q; it must read back as unowned", back.Owners)
+		}
+		// insurance declares a shared folder, so the document lands in it.
+		want := filepath.Join(vault, "Insurance", "_Household")
 		if filepath.Dir(got.Dest) != want {
 			t.Errorf("dest dir = %q, want %q", filepath.Dir(got.Dest), want)
 		}
@@ -504,4 +531,32 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestUnownedInACategoryWithNoSharedLabelIsSkipped pins the replacement for
+// ingest's deleted SharedMarker. There is no honest name for an unowned
+// document in a category that declares no `shared:` label, so the grammar
+// refuses and ingest -- which only ever proposes -- reports the refusal with
+// instructions, instead of filing the document under a word nobody configured.
+func TestUnownedInACategoryWithNoSharedLabelIsSkipped(t *testing.T) {
+	p, inbox, _ := testPipelineYAML(t, noSharedVaultYAML, map[string]string{
+		"globex policy.pdf": "policy-shared.txt",
+	})
+	got := find(t, analyze(t, p, inbox), "globex policy.pdf")
+
+	if !got.Skip {
+		t.Fatalf("proposed %q; an unowned document in a category with no shared label must not be filed under an invented name", got.Dest)
+	}
+	if got.Dest != "" {
+		t.Errorf("a skipped proposal carries a destination: %q", got.Dest)
+	}
+	for _, want := range []string{"insurance", "shared", "vault.yaml"} {
+		if !strings.Contains(got.SkipReason, want) {
+			t.Errorf("skip reason %q does not mention %q; it must say exactly what to add", got.SkipReason, want)
+		}
+	}
+	// The facts it did establish are still reported, so the user can act.
+	if got.DocType != "insurance-policy" {
+		t.Errorf("doctype = %q, want insurance-policy even on a skip", got.DocType)
+	}
 }

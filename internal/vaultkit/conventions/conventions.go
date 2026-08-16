@@ -168,12 +168,28 @@ func parsePattern(pattern string) ([]segment, error) {
 }
 
 // Render produces the conventional base filename (including extension) for doc.
+//
+// A document nobody owns has no value for {Names}. When the pattern makes that
+// field required, Render substitutes the document category's shared label --
+// the same label Parse reads back as "no owner", so Render and Parse stay
+// inverses. Substituting here rather than in a caller is what keeps the two
+// sides from drifting: there is exactly one spelling of an unowned document.
+// An optional {Names} is left out entirely instead, which round-trips just as
+// well and keeps the shorter name.
 func (c *Conventions) Render(doc Doc) (string, error) {
 	var parts []string
 	for _, seg := range c.segments {
 		v := c.fieldValue(doc, seg.field)
 		if v == "" {
 			if seg.optional {
+				continue
+			}
+			if seg.field == FieldNames && len(doc.Owners) == 0 {
+				shared, err := c.sharedName(doc.Category)
+				if err != nil {
+					return "", err
+				}
+				parts = append(parts, shared)
 				continue
 			}
 			return "", fmt.Errorf("filename: required field {%s} is empty", seg.field)
@@ -186,6 +202,31 @@ func (c *Conventions) Render(doc Doc) (string, error) {
 		ext = "." + ext
 	}
 	return name + ext, nil
+}
+
+// sharedName is the {Names} value for a document nobody owns: the category's
+// configured shared label, spelled as a filename word.
+//
+// When the category configures no such label there is no honest value, and
+// Render fails rather than inventing one -- inventing a name is the bug this
+// grammar exists to avoid, and ingest only ever proposes, so a loud failure
+// costs the user a message and never a misfiled document.
+func (c *Conventions) sharedName(category string) (string, error) {
+	if category == "" {
+		return "", fmt.Errorf("filename: this document has no owner and the pattern requires {Names}, " +
+			"but it has no category either, so no shared folder name can be resolved; set an owner")
+	}
+	cat, ok := c.cfg.CategoryFor(category)
+	if !ok {
+		return "", fmt.Errorf("filename: this document has no owner and the pattern requires {Names}, "+
+			"but category %q is not defined in structure", category)
+	}
+	if w := c.Word(cat.Shared); w != "" {
+		return w, nil
+	}
+	return "", fmt.Errorf("filename: this document has no owner and the pattern requires {Names}, "+
+		"but category %q defines no shared folder; add `shared: _Shared` under `structure.%s` in vault.yaml, "+
+		"or give the document an owner", category, category)
 }
 
 func (c *Conventions) fieldValue(doc Doc, field string) string {

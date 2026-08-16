@@ -651,3 +651,31 @@ func TestSharedFolderDocumentIsNotFlaggedAsMisplaced(t *testing.T) {
 		t.Fatalf("%s was not scanned", correct)
 	}
 }
+
+// TestMisplacedSharedDocumentIsStillCaught is the coverage that a naive fix
+// would have silently dropped. Teaching Parse to read a shared label as "no
+// owner" is only half of it: unless Render substitutes the label back,
+// conv.Path fails for an unowned document, checkPlacement can compute no
+// canonical destination, and a genuinely misplaced unowned document goes
+// unreported. Render owns the substitution, so the rule works again.
+func TestMisplacedSharedDocumentIsStillCaught(t *testing.T) {
+	v := newVault(t, "")
+	// Correct: identity's shared folder, named with the same label.
+	correct := "Identity/_Shared/Passport_Shared_Home-Office.txt"
+	v.write(correct, "x")
+	// Wrong: the identical document parked in an owner's folder.
+	misplaced := "Identity/Alex-Rao/Passport_Shared_Home-Office.txt"
+	v.write(misplaced, "x")
+
+	findings := v.run()
+	if f := hasRule(findings, RuleWrongFolder, correct); f != nil {
+		t.Errorf("a correctly filed unowned document was flagged: %+v", f.Repair)
+	}
+	f := hasRule(findings, RuleWrongFolder, misplaced)
+	if f == nil {
+		t.Fatal("a genuinely misplaced unowned document was not flagged; the placement rule has gone silent for shared documents")
+	}
+	if f.Repair == nil || f.Repair.MoveTo != correct {
+		t.Errorf("repair = %+v, want a move to %q", f.Repair, correct)
+	}
+}
