@@ -59,7 +59,7 @@ So: if you `brew install kagaz` today, `xcode-select -p` pointing at
 `CommandLineTools` (the common case) is already sufficient — Homebrew
 installs Go for you as a build dependency automatically.
 
-### `kagaz-mlx` (separate, opt-in formula — a different toolchain story)
+### `kagaz-mlx` (separate, opt-in formula — and it genuinely needs Xcode)
 
 ```
 brew install getkagaz/kagaz/kagaz-mlx
@@ -68,23 +68,45 @@ brew install getkagaz/kagaz/kagaz-mlx
 Builds the MLX classifier tier (`machelper-mlx/`). Kept as its own formula,
 never folded into the base `kagaz.rb`, both because it pulls in the whole
 MLX-Swift stack and multi-gigabyte model weights nobody should get by
-installing the base package, *and* because its build needs more than
-`kagaz.rb` does: MLX compiles bundled **C++** sources, which need a
-complete `libc++` header set. Full Xcode's toolchain has this; a Command
-Line Tools install can be missing it, which fails the build with `fatal
-error: 'cstdlib' file not found` — a broken/incomplete CLT install, not a
-code problem. Check yours before building:
+installing the base package, *and* because — unlike `kagaz.rb` — **this one
+genuinely requires full Xcode to build**, for a reason specific to MLX, not
+to Kagaz's own code:
 
-```
-printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
-```
+1. MLX compiles bundled **C++** sources, which need a complete `libc++`
+   header set. A Command Line Tools install can be missing it, which fails
+   the build with `fatal error: 'cstdlib' file not found` — a broken/
+   incomplete CLT install, not a code problem. Check yours with:
 
-If that fails, either reinstall Command Line Tools
+   ```
+   printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
+   ```
+
+2. **`swift build` alone is not enough, even with a healthy C++ toolchain.**
+   SwiftPM has no build rule for `.metal` shader sources at all — mlx-swift
+   says so itself. Without a second step, the binary links and `--version`
+   runs, but the first real MLX operation fails with `MLX error: Failed to
+   load the default metallib`. That second step is
+   `./Scripts/build-metallib.sh -c release` inside `machelper-mlx/`, which
+   runs `xcrun metal`/`xcrun metallib` to produce `mlx.metallib` — and
+   **`xcrun metal` ships only with full Xcode**, not Command Line Tools.
+   There is no way around this one; it is a hard Xcode requirement for
+   `kagaz-mlx`, not a "usually CLT is enough" situation like `kagaz.rb`.
+   `mlx.metallib` then has to be installed in the *same directory* as
+   `kagaz-machelper-mlx` (the formula does this), or the binary reports
+   itself available and then fails on every classification. See
+   `machelper-mlx/README.md` ("Why the second step exists", "Where
+   mlx.metallib has to live") for the full detail.
+
+If the C++ header check above fails, either reinstall Command Line Tools
 (`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`)
-or build with a full Xcode install's toolchain instead (see
-[CONTRIBUTING.md](../CONTRIBUTING.md#swift-and-xcode)). The requirement here
-is **a working C++ toolchain**, not "Xcode" specifically — Xcode's toolchain
-is simply one reliable way to get one.
+or build with a full Xcode install's toolchain (see
+[CONTRIBUTING.md](../CONTRIBUTING.md#swift-and-xcode)) — but building
+`kagaz-mlx` from source needs Xcode installed regardless, for the Metal
+step, even once your C++ toolchain is healthy.
+
+**This is the opposite of the base `kagaz` formula, and it's worth stating
+plainly so the two don't blur together: `kagaz.rb` needs no Xcode at all;
+`kagaz-mlx.rb` needs it unconditionally, for `xcrun metal`.**
 
 **Status recap:** Kagaz is pre-1.0 and not yet released. There is no
 published bottle and no shipped Homebrew Cask for the menu-bar app yet.
@@ -110,20 +132,27 @@ cd machelper && swift build -c release
 ```
 
 `DEVELOPER_DIR` is not required for this build. It's worth knowing about
-only if your Command Line Tools install is broken, or if you're building
-`machelper-mlx/` instead (which needs a working C++ toolchain — see the
-`kagaz-mlx` section above) and want to point at Xcode's toolchain rather
-than fix CLT:
+only if your Command Line Tools install is broken and you want to point at
+Xcode's toolchain rather than fix CLT:
 
 ```
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -c release
 ```
 
-`machelper-mlx/` builds the same way (`cd machelper-mlx && swift build -c
-release`) but is not part of the default build — see
-[CONTRIBUTING.md](../CONTRIBUTING.md) for the full local dev loop, including
-running the Go test suite (which is Linux-safe) versus the parts of the
-tree that only build on macOS.
+`machelper-mlx/` is a different story and genuinely needs Xcode installed —
+see the `kagaz-mlx` section above for why (`swift build` alone links a
+binary that cannot run a single MLX operation; a second, Xcode-only step
+builds the Metal shader library it needs):
+
+```
+cd machelper-mlx
+swift build -c release
+./Scripts/build-metallib.sh -c release
+```
+
+Not part of the default build — see [CONTRIBUTING.md](../CONTRIBUTING.md)
+for the full local dev loop, including running the Go test suite (which is
+Linux-safe) versus the parts of the tree that only build on macOS.
 
 ## First vault
 

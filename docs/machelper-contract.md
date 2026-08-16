@@ -210,6 +210,47 @@ None of this is a failure of the Kagaz pipeline: the Go core
 helper is absent, exits non-zero, or returns a confidence below
 `classify.min_confidence`.
 
+### Model cache: "present" is not the same check as "ready"
+
+`kagaz-machelper-mlx` reads **no manifest**. It considers a model present
+purely by directory inspection: the cache directory for the repo
+(`~/Library/Application Support/kagaz/models/<hf-repo>/`) holding a
+`config.json` and at least one `.safetensors` file is enough for it to try
+loading the model — that's the whole check, on the Swift side.
+
+`kagaz model pull` (`internal/vaultkit/models`), by contrast, writes a real
+manifest, `.kagaz-model.json`, in that same directory: the resolved
+revision, the full file list, each file's size and SHA256, and a `status`
+field that is only ever set to `"ready"` after **every** file in the
+manifest has been re-hashed and matched. `Store.Ready` is the Go side's own
+notion of complete, and it is stricter than the helper's.
+
+**These two checks can disagree, and the direction they disagree in
+matters:** an interrupted pull that already landed `config.json` plus one
+weights shard — but not the rest — looks *present* to the Swift helper
+(which would attempt to load it and likely fail with `model_load_failed`,
+or worse, load a partial/wrong-shaped model) even though Kagaz's own
+manifest would say `status: "downloading"`, not `"ready"`. The manifest,
+not a directory listing, is the authoritative signal for "this download
+actually completed" — anything that needs to know whether a model is
+genuinely usable should check `.kagaz-model.json`'s `status`, not just
+whether the directory has files in it. The Swift helper's directory check
+exists because the helper is deliberately incapable of reading Go-side
+state or downloading anything itself (project constraint 2) — it is a
+reasonable cheap check for "has anyone ever tried to put a model here",
+not a claim of verified completeness.
+
+(`kagaz model pull` has been exercised for real, not just unit-tested: a
+run against `mlx-community/Qwen2.5-3B-Instruct-4bit` fetched 9 files
+totalling 1.6 GB, verified every one by SHA256, wrote `status: ready`, and
+resolved the revision to `4f83f8f146fdf28b512a06562b671d7af4fab457`. That
+revision is what the pull resolved `main` to *at pull time*, not a value
+baked into the code — `internal/vaultkit/models/pull.go`'s
+`pinnedRevisions` map is still empty, so a future pull can resolve a
+different revision unless/until pinning is added. The downloader's
+correctness itself is no longer a hedge; the revision-pinning gap is real
+and separate.)
+
 ### `--probe`
 
 ```

@@ -47,26 +47,50 @@ requirements** — don't assume they're the same:
   cd machelper && swift build
   ```
 
-- **`machelper-mlx/`** needs a **working C++ toolchain** — not "Xcode"
-  specifically, but MLX's bundled C++ sources need a complete `libc++`
-  header set, which a Command Line Tools install can be missing (fails with
-  `fatal error: 'cstdlib' file not found`). Check yours before building:
+- **`machelper-mlx/`** genuinely needs **full Xcode installed** — this is
+  not the same situation as `machelper/` above, and it's not just about the
+  C++ toolchain either. Two separate requirements stack here:
 
-  ```
-  printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
-  ```
+  1. MLX's bundled C++ sources need a complete `libc++` header set, which a
+     Command Line Tools install can be missing (fails with `fatal error:
+     'cstdlib' file not found`). Check yours before building:
 
-  If that fails, either reinstall Command Line Tools
-  (`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`)
-  or build against a full Xcode install's toolchain instead:
+     ```
+     printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
+     ```
 
-  ```
-  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
-  ```
+     If that fails, reinstall Command Line Tools
+     (`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`).
 
-  `DEVELOPER_DIR` is not needed for `machelper/` — only reach for it if your
-  Command Line Tools install turns out to be broken, or you're building
-  `machelper-mlx/` and prefer Xcode's toolchain over fixing CLT.
+  2. Even with (1) satisfied, `swift build` alone is not enough: SwiftPM has
+     no build rule for `.metal` shader sources, so the linked binary cannot
+     run a single MLX operation until a second, **Xcode-only** step builds
+     the Metal shader library:
+
+     ```
+     cd machelper-mlx
+     swift build -c release
+     ./Scripts/build-metallib.sh -c release
+     ```
+
+     `Scripts/build-metallib.sh` runs `xcrun metal`/`xcrun metallib`, which
+     ship only with full Xcode — there is no Command Line Tools path around
+     this step. If you only fixed the C++ toolchain, point the whole build
+     at an installed Xcode instead:
+
+     ```
+     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -c release
+     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./Scripts/build-metallib.sh -c release
+     ```
+
+  `mlx.metallib` (the script's output) then has to live in the same
+  directory as the `kagaz-machelper-mlx` binary, or the binary reports
+  itself available and fails on every classification instead. See
+  `machelper-mlx/README.md` ("Why the second step exists", "Where
+  mlx.metallib has to live") for the full detail.
+
+  `DEVELOPER_DIR` is not needed for `machelper/` at all — that package
+  builds correctly under Command Line Tools alone.
 
 (`app/`, the planned SwiftUI menu-bar app, is an empty placeholder directory
 as of this writing — nothing to build there yet.)

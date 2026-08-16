@@ -177,7 +177,7 @@
             },
             "endpoint": {
               "type": "string",
-              "description": "Ollama HTTP endpoint. Must resolve to localhost, 127.0.0.1, ::1 or 0.0.0.0 — Kagaz refuses to configure a remote inference host.",
+              "description": "Ollama HTTP endpoint. Must resolve to localhost, 127.0.0.1 or ::1 — Kagaz refuses to configure a remote inference host. 0.0.0.0 is deliberately NOT accepted, even though it looks local: it is a bind address (\"listen on every interface\"), not a destination you can connect to, and both Ollama call sites reject it again at request time. config.requireLocalhost rejects it explicitly with a message pointing at localhost/127.0.0.1 instead, so a vault.yaml using it fails validation immediately rather than failing at the first classification.",
               "default": "http://localhost:11434"
             }
           }

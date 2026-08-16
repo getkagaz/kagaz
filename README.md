@@ -64,8 +64,9 @@ full Xcode) and **Go** as build-time dependencies; Homebrew installs Go for
 you automatically, and most Macs already have Command Line Tools. Once
 bottles are published, the same command will need neither — see
 [docs/installation.md](docs/installation.md) for the full breakdown, the
-optional MLX tier (which does need a working C++ toolchain), the menu-bar
-app, and building from source directly.
+optional MLX tier (which genuinely does need full Xcode, unlike the base
+install — see the FAQ below), the menu-bar app, and building from source
+directly.
 
 ## Quickstart
 
@@ -156,19 +157,28 @@ No — see Privacy invariants above.
 
 **Does `brew install kagaz` need Xcode?**
 
-No. Building `kagaz.rb` from source needs Xcode's Command Line Tools and
-Go — full Xcode is not required, and `Formula/kagaz.rb` declares no
-`depends_on xcode: :build`. The Apple Foundation Models classifier's guided
-generation is built at run time with `DynamicGenerationSchema` rather than
-the `@Generable` macro, because the doctype catalog it's constrained to is
-only known at run time — every vault can extend it via `vault.yaml` — and a
-macro's schema is fixed at compile time, so `@Generable` was never usable
-here regardless of toolchain. The `@Generable` macro plugin was the one
-thing that would have needed full Xcode; `machelper` doesn't use it. The
-separate, opt-in `kagaz-mlx` formula is different: it compiles MLX's
-bundled C++ sources, which need a complete C++ toolchain — Xcode's
-satisfies that, but so can a healthy Command Line Tools install; see
-[docs/installation.md](docs/installation.md) for the check and the fix.
+The base `kagaz` install: no. Building `kagaz.rb` from source needs Xcode's
+Command Line Tools and Go — full Xcode is not required, and
+`Formula/kagaz.rb` declares no `depends_on xcode: :build`. The Apple
+Foundation Models classifier's guided generation is built at run time with
+`DynamicGenerationSchema` rather than the `@Generable` macro, because the
+doctype catalog it's constrained to is only known at run time — every vault
+can extend it via `vault.yaml` — and a macro's schema is fixed at compile
+time, so `@Generable` was never usable here regardless of toolchain. The
+`@Generable` macro plugin was the one thing that would have needed full
+Xcode; `machelper` doesn't use it.
+
+**`kagaz-mlx` (the separate, opt-in MLX tier) is the opposite: it genuinely
+needs full Xcode**, and not for the reason you'd guess. MLX does compile
+bundled C++ sources that need a complete C++ toolchain (Command Line Tools
+usually has this; check with the command in
+[docs/installation.md](docs/installation.md)) — but even with that
+satisfied, `swift build` alone links a `kagaz-machelper-mlx` binary that
+cannot run a single MLX operation, because SwiftPM has no build rule for
+`.metal` shader sources at all. Producing the Metal shader library needs
+`xcrun metal`, which ships only with full Xcode — there is no Command Line
+Tools path around this one. See
+[docs/installation.md](docs/installation.md) for the full build sequence.
 
 **Is there a menu-bar app?**
 
