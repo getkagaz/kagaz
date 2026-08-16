@@ -36,13 +36,19 @@ const DefaultRevision = "main"
 
 // pinnedRevisions maps a repo to a commit sha that this build is pinned to.
 //
-// It is empty on purpose. A pin is only worth having if the sha is a real
-// commit that someone verified against the hub; inventing one here would make
-// every pull of that repo fail with a confusing 404, and copying one in
-// unverified would be worse. Until a maintainer adds a verified entry, Pull
-// resolves DefaultRevision to a concrete sha at pull time, records it, and
-// tells the user the sha to pass to `--revision` to pin it themselves.
-var pinnedRevisions = map[string]string{}
+// A pin is only worth having if the sha is a real commit that someone
+// verified against the hub; inventing one here would make every pull of that
+// repo fail with a confusing 404, and copying one in unverified would be
+// worse. Every entry below was produced by a real `kagaz model pull` that
+// resolved DefaultRevision, downloaded every file, and verified every SHA256
+// before this sha was copied in. A repo with no entry here still works: Pull
+// falls back to resolving DefaultRevision at pull time and tells the user the
+// sha to pass to `--revision` to pin it themselves.
+var pinnedRevisions = map[string]string{
+	// mlx-community/Qwen2.5-3B-Instruct-4bit (config.DefaultMLXModel): resolved
+	// from `main`, 9 files / 1.6 GB, every file SHA256-verified, on 2026-08-16.
+	"mlx-community/Qwen2.5-3B-Instruct-4bit": "4f83f8f146fdf28b512a06562b671d7af4fab457",
+}
 
 // PinnedRevision returns the build-pinned revision for repo, if there is one.
 func PinnedRevision(repo string) (string, bool) {

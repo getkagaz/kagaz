@@ -694,17 +694,16 @@ func TestPullHonoursContextCancellation(t *testing.T) {
 // than leaving it to memory.
 //
 // docs/model-use.md says `kagaz model pull` downloads from a pinned repo *and
-// revision*. pinnedRevisions is deliberately empty because no maintainer has
-// yet verified a commit sha for the default model, and inventing one here
-// would 404 for every user. To close the gap: fetch
-// https://huggingface.co/api/models/mlx-community/Qwen2.5-3B-Instruct-4bit/revision/main,
-// take .sha, confirm it in the hub UI, add the entry to pinnedRevisions, and
-// this test starts asserting instead of skipping.
+// revision*. A maintainer has verified a commit sha for the default model by
+// running a real `kagaz model pull`, downloading every file, and verifying
+// every SHA256, so pinnedRevisions now carries that entry. This test fails
+// loudly -- rather than skipping -- if the entry is ever removed or emptied,
+// so the pin can never silently disappear again.
 func TestPinnedRevisionForTheDefaultModel(t *testing.T) {
 	rev, ok := PinnedRevision(config.DefaultMLXModel)
 	if !ok || rev == "" {
-		t.Skipf("no build pin for %s yet; docs/model-use.md promises a pinned revision. "+
-			"Add a verified commit sha to pinnedRevisions (see this test's doc comment) to close the gap.",
+		t.Fatalf("no build pin for %s; docs/model-use.md promises a pinned revision. "+
+			"Add a verified commit sha to pinnedRevisions in pull.go to restore it.",
 			config.DefaultMLXModel)
 	}
 	if len(rev) != 40 {
@@ -713,6 +712,74 @@ func TestPinnedRevisionForTheDefaultModel(t *testing.T) {
 	for _, r := range rev {
 		if !strings.ContainsRune("0123456789abcdef", r) {
 			t.Fatalf("pinned revision %q is not lowercase hex", rev)
+		}
+	}
+}
+
+// TestPullUsesTheBuildPinnedRevisionForTheDefaultModel proves the pin actually
+// takes effect end to end: a Pull of the default model with no --revision
+// asks the fake hub to resolve the pinned sha (never DefaultRevision /
+// "main"), and the resulting manifest records that pinned sha.
+func TestPullUsesTheBuildPinnedRevisionForTheDefaultModel(t *testing.T) {
+	pinned, ok := PinnedRevision(config.DefaultMLXModel)
+	if !ok {
+		t.Fatalf("no build pin for %s; see TestPinnedRevisionForTheDefaultModel", config.DefaultMLXModel)
+	}
+
+	hub := newFakeHub(t, config.DefaultMLXModel, modelFiles())
+	hub.sha = pinned // the fake hub resolves any revision it is asked for to its one sha
+	c, _ := testClient(t, hub)
+
+	res, err := c.Pull(context.Background(), Options{Repo: config.DefaultMLXModel})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if res.Revision != pinned {
+		t.Fatalf("Revision = %q, want the build-pinned revision %q", res.Revision, pinned)
+	}
+
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	wantPath := "/api/models/" + config.DefaultMLXModel + "/revision/" + pinned
+	for _, p := range hub.requests {
+		if strings.HasPrefix(p, "/api/models/") && !strings.HasPrefix(p, wantPath) {
+			t.Fatalf("metadata request %q did not ask for the pinned revision %q; the pin did not take effect", p, wantPath)
+		}
+		if strings.HasPrefix(p, "/api/models/") && strings.Contains(p, "/revision/"+DefaultRevision) {
+			t.Fatalf("Pull resolved the moving revision %q instead of the build pin %q", DefaultRevision, pinned)
+		}
+	}
+}
+
+// TestPullExplicitRevisionOverridesTheBuildPin is the other half: a caller
+// that passes --revision must win over the build pin, even for a repo that
+// has one.
+func TestPullExplicitRevisionOverridesTheBuildPin(t *testing.T) {
+	if _, ok := PinnedRevision(config.DefaultMLXModel); !ok {
+		t.Fatalf("no build pin for %s; see TestPinnedRevisionForTheDefaultModel", config.DefaultMLXModel)
+	}
+
+	hub := newFakeHub(t, config.DefaultMLXModel, modelFiles())
+	hub.sha = "fedcba9876543210fedcba9876543210fedcba9" // deliberately not the build pin
+	c, _ := testClient(t, hub)
+
+	res, err := c.Pull(context.Background(), Options{
+		Repo:     config.DefaultMLXModel,
+		Revision: hub.sha,
+	})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if res.Revision != hub.sha {
+		t.Fatalf("Revision = %q, want the explicitly requested %q; --revision must override the build pin", res.Revision, hub.sha)
+	}
+
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	wantPath := "/api/models/" + config.DefaultMLXModel + "/revision/" + hub.sha
+	for _, p := range hub.requests {
+		if strings.HasPrefix(p, "/api/models/") && !strings.HasPrefix(p, wantPath) {
+			t.Fatalf("metadata request %q did not ask for the explicit revision %q", p, wantPath)
 		}
 	}
 }
