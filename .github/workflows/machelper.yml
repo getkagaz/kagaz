@@ -3,6 +3,14 @@ name: machelper
 # Compile-only checks for the two Swift packages. These jobs must NEVER
 # download model weights: nothing in a `swift build` does, and no step here
 # runs `kagaz model pull` or any helper subcommand that would load a model.
+# The MLX job asserts that afterwards rather than only promising it.
+#
+# The MLX job also builds mlx.metallib. That is not optional polish: SwiftPM has
+# no build rule for `.metal` sources, so `swift build` alone links a binary
+# whose shader library was never compiled and which dies on its first MLX
+# operation with "Failed to load the default metallib". A job that stops at
+# `swift build` is green while shipping exactly that — CI that cannot see the
+# failure mode is worse than none, because it manufactures confidence.
 
 on:
   push:
@@ -54,6 +62,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Select Xcode explicitly rather than relying on the image default.
+      # `xcrun metal` ships only with Xcode, never with the Command Line Tools,
+      # so if the runner image ever changed its default selection this job
+      # would fail deep inside build-metallib.sh instead of here. Pick the
+      # newest Xcode present rather than hardcoding a version path, which would
+      # break every time the image bumps Xcode.
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          selected="$(xcode-select -p)"
+          echo "default selection: $selected"
+          case "$selected" in
+            *CommandLineTools*)
+              newest="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+              [ -n "$newest" ] || { echo "::error::no Xcode on this runner; xcrun metal cannot work"; exit 1; }
+              echo "::warning::default selection was CommandLineTools; using $newest"
+              echo "DEVELOPER_DIR=${newest}/Contents/Developer" >>"$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: Verify the Metal compiler is available
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          # The exact check build-metallib.sh makes, made here so a missing
+          # Metal compiler is a named, one-line failure.
+          xcrun -sdk macosx --find metal
+          xcrun -sdk macosx --find metallib
+
       # MLX ships C++ sources, so this needs a complete C++ toolchain. Fail
       # early and legibly if the runner image ever regresses, rather than
       # after several hundred compile steps.
@@ -72,6 +109,74 @@ jobs:
       - name: swift build (release)
         working-directory: machelper-mlx
         run: swift build -c release
+
+      # Must run AFTER `swift build`: the script compiles kernels out of the
+      # mlx-swift checkout that `swift build` resolves into .build/checkouts.
+      - name: Build mlx.metallib
+        working-directory: machelper-mlx
+        run: |
+          set -euo pipefail
+          # .build is restored from cache, and nothing in `swift build` manages
+          # this file, so a stale metallib could survive and make the assertion
+          # below pass without the script having worked. Delete it first: the
+          # check must prove *this* run produced it.
+          rm -f .build/release/mlx.metallib
+          ./Scripts/build-metallib.sh -c release
+
+      - name: Assert the shader library exists and is non-empty
+        working-directory: machelper-mlx
+        run: |
+          set -euo pipefail
+          lib=.build/release/mlx.metallib
+          [ -s "$lib" ] || { echo "::error::${lib} is missing or empty"; exit 1; }
+          ls -l "$lib"
+          # It must sit beside the binary: mlx's first lookup is
+          # <dir of the running binary>/mlx.metallib.
+          [ -x .build/release/kagaz-machelper-mlx ] || {
+            echo "::error::helper binary missing next to the metallib"; exit 1; }
+
+      # Free, weightless end-to-end check of the honest-probe behaviour: with
+      # a working metallib and no weights, --probe must answer `false` for a
+      # WEIGHTS reason. A metallib/shader reason means the shader library was
+      # not built or not found — the exact regression the step above guards.
+      #
+      # It cannot download anything. The probe is documented never to fetch,
+      # it is pointed at a repo id that does not exist, and the step asserts
+      # afterwards that no model cache appeared. See the guard below.
+      - name: Probe (no weights, no download)
+        working-directory: machelper-mlx
+        run: |
+          set -euo pipefail
+          out="$(./.build/release/kagaz-machelper-mlx --probe --model mlx-community/Does-Not-Exist-4bit)"
+          echo "$out"
+          python3 - "$out" <<'PY'
+          import json, re, sys
+          p = json.loads(sys.argv[1])
+          assert p["contract"] == 1, p
+          assert p["engine"] == "mlx", p
+          assert p["available"] is False, "probe claimed weights exist on a clean runner"
+          reason = p.get("reason", "")
+          assert reason, "an unavailable probe must always carry a reason"
+          assert re.search(r"weight", reason, re.I), f"expected a weights reason, got: {reason}"
+          assert not re.search(r"metallib|shader", reason, re.I), (
+              f"shader-library regression: {reason}")
+          print("probe OK:", reason)
+          PY
+
+      # Hard guard on the workflow's never-downloads-weights property. Model
+      # weights are gigabytes; if anything above ever started fetching them,
+      # this fails loudly instead of the job quietly growing a 1.6 GB download.
+      - name: Assert no model weights were downloaded
+        run: |
+          set -euo pipefail
+          cache="$HOME/Library/Application Support/kagaz/models"
+          if [ -e "$cache" ]; then
+            echo "::error::a model cache appeared at ${cache}; something in this workflow downloaded weights"
+            du -sh "$cache" || true
+            find "$cache" -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "no model cache present: nothing downloaded weights."
 
       - name: swift test
         working-directory: machelper-mlx
