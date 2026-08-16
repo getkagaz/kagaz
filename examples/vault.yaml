@@ -59,42 +59,55 @@ filename:
 # describing the subtree under `path`. Categories that accumulate one
 # document per fiscal period (financial, company, utility) default to
 # "{Owner}/{FY}"; everything else defaults to "{Owner}".
+#
+# `shared` names the folder used instead of {Owner} for a document owned by
+# several people or by nobody — a third party's certificate, say. Clear it on
+# a category to make Kagaz refuse to file an unowned document there rather
+# than invent an owner for it.
 structure:
   personal:
     path: Personal
+    shared: _Shared
     layout: "{Owner}"
   company:
     path: Company
+    shared: _Shared
     layout: "{Owner}/{FY}"
   financial:
     path: Financial
+    shared: _Shared
     layout: "{Owner}/{FY}"
   travel:
     path: Travel
+    shared: _Shared
     layout: "{Owner}"
   identity:
     path: Identity
-    # Multi-owner or unowned identity documents land in Identity/_Shared
-    # instead of trying to guess an owner folder for them.
     shared: _Shared
     layout: "{Owner}"
   insurance:
     path: Insurance
+    shared: _Shared
     layout: "{Owner}"
   medical:
     path: Medical
+    shared: _Shared
     layout: "{Owner}"
   legal:
     path: Legal
+    shared: _Shared
     layout: "{Owner}"
   property:
     path: Property
+    shared: _Shared
     layout: "{Owner}"
   vehicles:
     path: Vehicles
+    shared: _Shared
     layout: "{Owner}"
   utility:
     path: Utilities
+    shared: _Shared
     layout: "{Owner}/{FY}"
 
 tags:

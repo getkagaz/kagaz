@@ -416,6 +416,18 @@ func DefaultLifecycleTags() []string {
 	return []string{"active", "superseded", "encrypted", "confidential", "to-action", "dont-touch"}
 }
 
+// DefaultSharedFolder is the folder every default category uses in place of
+// {Owner} for documents that belong to more than one person or to nobody.
+//
+// Every category carries one, not just identity: a third party's document — a
+// client's incorporation certificate, a supplier's insurance schedule — has no
+// owner to infer, and conventions.Render deliberately refuses to invent a name
+// for it. Without a shared label on the category, that refusal is the only
+// outcome, so a vault built from these defaults could not file an unowned
+// document at all. A vault that wants the refusal back can clear `shared:` on
+// the category it cares about.
+const DefaultSharedFolder = "_Shared"
+
 // DefaultStructure is the global-first category-to-folder mapping used when
 // vault.yaml does not specify one.
 func DefaultStructure() Structure {
@@ -424,7 +436,7 @@ func DefaultStructure() Structure {
 		"company":   {Path: "Company"},
 		"financial": {Path: "Financial"},
 		"travel":    {Path: "Travel"},
-		"identity":  {Path: "Identity", Shared: "_Shared"},
+		"identity":  {Path: "Identity"},
 		"insurance": {Path: "Insurance"},
 		"medical":   {Path: "Medical"},
 		"legal":     {Path: "Legal"},
@@ -434,9 +446,20 @@ func DefaultStructure() Structure {
 	}
 	for name, cat := range s {
 		cat.Layout = defaultLayout(name)
+		cat.Shared = DefaultSharedFolder
 		s[name] = cat
 	}
 	return s
+}
+
+// DefaultCategories lists the default category names in the order they are
+// presented to a user. Callers that render the structure block need a stable
+// order; ranging over DefaultStructure gives a different one every time.
+func DefaultCategories() []string {
+	return []string{
+		"personal", "company", "financial", "travel", "identity",
+		"insurance", "medical", "legal", "property", "vehicles", "utility",
+	}
 }
 
 // defaultLayout partitions the categories that accumulate one document per

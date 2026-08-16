@@ -732,3 +732,120 @@ func confidentialDocument(t *testing.T, vault string) string {
 	}
 	return firstDocument(t, vault)
 }
+
+// TestInitSeedsNoPeopleButDemoDoes covers the defect where a plain `kagaz init`
+// wrote the two demo fixtures (Alex Rao, Sam Rao) into a real user's vault.
+// A fresh vault must not assert that two people the user has never heard of
+// exist -- owner inference would then match their documents against those
+// names. The demo vault still needs them, so only --demo keeps them.
+func TestInitSeedsNoPeopleButDemoDoes(t *testing.T) {
+	plain := filepath.Join(t.TempDir(), "v")
+	if _, errw, code := run(t, "init", "--root", plain); code != ExitOK {
+		t.Fatalf("init exit %d: %s", code, errw)
+	}
+	cfg, err := config.LoadFile(filepath.Join(plain, "vault.yaml"))
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if len(cfg.People) != 0 {
+		t.Fatalf("a plain init seeded %d people: %+v", len(cfg.People), cfg.People)
+	}
+	raw, err := os.ReadFile(filepath.Join(plain, "vault.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range demoPeople {
+		if strings.Contains(string(raw), p.Name) {
+			t.Fatalf("plain init's vault.yaml names the demo person %q", p.Name)
+		}
+	}
+
+	demoCfg, err := config.LoadFile(initDemo(t))
+	if err != nil {
+		t.Fatalf("LoadFile(demo): %v", err)
+	}
+	if len(demoCfg.People) != len(demoPeople) {
+		t.Fatalf("demo vault has %d people, want %d", len(demoCfg.People), len(demoPeople))
+	}
+}
+
+// TestInitWritesAnEditableStructureBlock asserts that the mechanism the
+// shared-folder error message points at is actually present in the file the
+// user is told to edit: "add `shared: _Shared` under `structure.company`" is
+// unfollowable when vault.yaml has no structure block.
+func TestInitWritesAnEditableStructureBlock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "v")
+	if _, errw, code := run(t, "init", "--root", root); code != ExitOK {
+		t.Fatalf("init exit %d: %s", code, errw)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "vault.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "\nstructure:\n") {
+		t.Fatalf("init wrote no structure block:\n%s", raw)
+	}
+	cfg, err := config.LoadFile(filepath.Join(root, "vault.yaml"))
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	want := config.DefaultStructure()
+	if len(cfg.Structure) != len(want) {
+		t.Fatalf("init wrote %d categories, defaults have %d", len(cfg.Structure), len(want))
+	}
+	for name, cat := range want {
+		got, ok := cfg.Structure[name]
+		if !ok {
+			t.Errorf("init omitted category %q", name)
+			continue
+		}
+		if got != cat {
+			t.Errorf("structure.%s = %+v, want %+v", name, got, cat)
+		}
+	}
+}
+
+// TestIngestProposesForAnUnownedDocumentInAFreshVault is the end-to-end
+// regression test for the blocker: against a vault made by a plain `kagaz
+// init`, every document with no owner to infer was skipped with "category
+// %q defines no shared folder", which made a new user's first ingest file
+// nothing at all.
+func TestIngestProposesForAnUnownedDocumentInAFreshVault(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "v")
+	if _, errw, code := run(t, "init", "--root", root); code != ExitOK {
+		t.Fatalf("init exit %d: %s", code, errw)
+	}
+	vault := filepath.Join(root, "vault.yaml")
+
+	src := filepath.Join(t.TempDir(), "northwind invoice 2026.pdf")
+	if err := os.WriteFile(src, renderPDF("Tax Invoice", []string{
+		"NORTHWIND HOLDINGS LIMITED",
+		"TAX INVOICE",
+		"Invoice Number: NH-2026-0042",
+		"Invoice Date: 14/02/2026",
+		"Consulting services ............ 1,200.00",
+		"Total: 1200.00",
+	}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errw, code := run(t, "--vault", vault, "ingest", "--propose-only", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("ingest exit %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	if strings.Contains(out, "defines no shared folder") {
+		t.Fatalf("the shared-folder skip is back: %s", out)
+	}
+	proposals, _ := obj["proposals"].([]any)
+	if len(proposals) != 1 {
+		t.Fatalf("an unowned document produced %d proposals, want 1: %s", len(proposals), out)
+	}
+	dest, _ := proposals[0].(map[string]any)["dest"].(string)
+	if dest == "" {
+		t.Fatalf("proposal has no destination: %s", out)
+	}
+	if !strings.Contains(dest, config.DefaultSharedFolder) {
+		t.Fatalf("destination %q does not use the shared folder", dest)
+	}
+}

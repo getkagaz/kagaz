@@ -125,6 +125,53 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 	return cmd
 }
 
+// structureBlock renders the `structure:` map into the vault.yaml `init`
+// writes, generated from config.DefaultStructure so the file can never drift
+// from the built-in defaults.
+//
+// It is written out rather than left implicit because the layout is both the
+// thing a user is most likely to want to change and the thing Kagaz's own
+// error messages point at: "add `shared: _Shared` under `structure.company`"
+// is impossible to act on when the file has no structure block to add it
+// under.
+func structureBlock() string {
+	s := config.DefaultStructure()
+	var b strings.Builder
+	b.WriteString("# Where each category of document is filed, beneath vault_root.\n")
+	b.WriteString("# layout is a template of {Owner} and {FY} segments; shared names the folder\n")
+	b.WriteString("# used instead of {Owner} for a document owned by several people or by nobody\n")
+	b.WriteString("# (a third party's certificate, say). Clearing shared makes Kagaz refuse to\n")
+	b.WriteString("# file an unowned document in that category rather than invent an owner.\n")
+	b.WriteString("structure:\n")
+	order := config.DefaultCategories()
+	// Anything DefaultStructure gains without DefaultCategories being updated
+	// still has to reach the file, or init would quietly write a narrower
+	// vault than the defaults describe.
+	listed := make(map[string]bool, len(order))
+	for _, n := range order {
+		listed[n] = true
+	}
+	var extra []string
+	for n := range s {
+		if !listed[n] {
+			extra = append(extra, n)
+		}
+	}
+	sort.Strings(extra)
+	for _, name := range append(order, extra...) {
+		cat, ok := s[name]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "  %s:\n    path: %s\n", name, cat.Path)
+		if cat.Shared != "" {
+			fmt.Fprintf(&b, "    shared: %s\n", cat.Shared)
+		}
+		fmt.Fprintf(&b, "    layout: %q\n", cat.Layout)
+	}
+	return b.String()
+}
+
 func humanInit(w io.Writer, payload any) error {
 	p, ok := payload.(InitPayload)
 	if !ok {
@@ -169,10 +216,21 @@ func vaultYAML(fyStart int, demo bool) string {
 	}
 
 	b.WriteString("# The people this vault files documents for. `tag` defaults to a slug of `name`.\n")
-	b.WriteString("people:\n")
-	for _, p := range demoPeople {
-		fmt.Fprintf(&b, "  - name: %s\n    tag: %s\n", p.Name, p.Tag)
+	if demo {
+		b.WriteString("people:\n")
+		for _, p := range demoPeople {
+			fmt.Fprintf(&b, "  - name: %s\n    tag: %s\n", p.Name, p.Tag)
+		}
+	} else {
+		b.WriteString("# Add yourself and anyone whose documents live here, for example:\n")
+		b.WriteString("#   - name: Your Name\n#     tag: your-name\n")
+		b.WriteString("# Owner inference reads this list: until a name is here, Kagaz cannot\n")
+		b.WriteString("# recognise it in a document and files what it finds as shared instead.\n")
+		b.WriteString("people: []\n")
 	}
+	b.WriteString("\n")
+
+	b.WriteString(structureBlock())
 	b.WriteString("\n")
 
 	b.WriteString("# The controlled Finder-tag vocabulary. A tag outside it is a `kagaz lint`\n")

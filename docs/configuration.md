@@ -64,12 +64,15 @@ A map from category name to:
 | Field | Default | Meaning |
 |---|---|---|
 | `path` | title-cased category name | Relative folder beneath `vault_root`; no `..`. |
-| `shared` | *(unset)* | Folder used instead of `{Owner}` for multi-owner or unowned documents. |
+| `shared` | `_Shared` in the default structure; *(unset)* for a category you define yourself | Folder used instead of `{Owner}` for multi-owner or unowned documents. With no `shared`, Kagaz refuses to file an unowned document in the category rather than inventing an owner for it. |
 | `layout` | `"{Owner}/{FY}"` for `financial`, `company`, `utility`; `"{Owner}"` otherwise | Slash-separated template of `{Owner}` and `{FY}` segments describing the subtree under `path`. |
 
 Omitting `structure` entirely uses the global-first default: `personal`,
-`company`, `financial`, `travel`, `identity` (shared: `_Shared`),
-`insurance`, `medical`, `legal`, `property`, `vehicles`, `utility`.
+`company`, `financial`, `travel`, `identity`, `insurance`, `medical`,
+`legal`, `property`, `vehicles`, `utility` — every one of them with
+`shared: _Shared`, so a document with no owner to infer (a third party's
+certificate, an incorporation document) can still be filed. `kagaz init`
+writes this block into vault.yaml explicitly, so it is visible and editable.
 
 `layout` is what decides whether a category accumulates one folder per
 fiscal year (documents that recur every period, like utility bills or
