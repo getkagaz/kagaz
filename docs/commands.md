@@ -50,6 +50,36 @@ through `move.Engine` with a single manifest for the whole batch. Accepts
 via a flag, non-interactively). `--propose-only` stops after the preview.
 `--reindex` regenerates sidecars for already-ingested documents.
 
+### Saying what a document is
+
+A document no tier can identify comes back `unclassified` and is skipped —
+the correct outcome, because guessing a category is how documents get lost.
+To file it anyway, say what it is:
+
+```
+kagaz ingest <path>... --set-doctype <name> [--set-owner <person>] \
+                       [--set-identifier <text>] [--set-year <yyyy>]
+```
+
+The overrides apply to **every path in that invocation** — one doctype per
+call, which is what a triage view wants: select the rows that are all the
+same kind of document and call once. `--set-owner` takes a display name or a
+tag from `people:` and may be repeated for several owners. Anything not
+overridden is still inferred, and OCR, extraction and the sidecar text still
+happen in full: only the inference is replaced.
+
+`--set-doctype` is validated against the resolved catalog and rejected, with
+close matches named, if the doctype does not exist — a human may pick any
+real doctype but may not invent one (Global Constraint 8). There is no
+`--set-category`: the category always comes from the catalog.
+
+A human assignment is recorded as one. The sidecar's `classifier` reads
+`human`, no confidence is recorded (a person's decision is not a
+probability), and the proposal's `why` lines say you specified the doctype,
+naming what the classifier had answered instead. Kagaz does not learn from
+the assignment — it prints a one-line suggestion to add a keyword to the
+`doctypes:` block in `vault.yaml`, and never edits your config itself.
+
 Readable formats: PDFs, images, plain text, Office `.docx`/`.xlsx`/`.pptx`
 (read in-process, no Microsoft Office or external tool needed), and the
 legacy `.doc`/`.rtf`/`.rtfd`/`.odt`/`.wordml`/`.xls`/`.ppt` — the first five

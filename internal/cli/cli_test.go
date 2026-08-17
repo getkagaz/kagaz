@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -946,5 +947,177 @@ func TestIngestProposesForAnUnownedDocumentInAFreshVault(t *testing.T) {
 	}
 	if !strings.Contains(dest, config.DefaultSharedFolder) {
 		t.Fatalf("destination %q does not use the shared folder", dest)
+	}
+}
+
+// recipeText is prose no classifier tier recognises: it is a real document to
+// its owner and nothing in any catalog. It stands in for the 136 documents a
+// real dry run skipped as unclassified.
+const recipeText = "Grandma's Lemon Drizzle\n\nServes eight.\n\n" +
+	"Cream the butter and sugar until pale. Fold in the flour a third at a time, " +
+	"then the zest of two lemons. Bake at 180C for forty minutes.\n\n" +
+	"Prick the top all over and spoon the juice and sugar over while still warm.\n"
+
+// TestIngestSetDoctypeFilesADocumentNothingCouldClassify is the end-to-end
+// proof of the triage path: unclassified is a dead end without it, and the
+// filing it produces must be recorded as the user's decision, not a model's.
+func TestIngestSetDoctypeFilesADocumentNothingCouldClassify(t *testing.T) {
+	vault := initDemo(t)
+	src := filepath.Join(t.TempDir(), "lemon drizzle.txt")
+	if err := os.WriteFile(src, []byte(recipeText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, code := run(t, "--vault", vault, "ingest", "--propose-only", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("propose-only exit %d: %s", code, out)
+	}
+	obj := decode(t, out)
+	first := obj["proposals"].([]any)[0].(map[string]any)
+	if skip, _ := first["skip"].(bool); !skip {
+		t.Fatalf("a recipe was classified as %q; this test needs an unclassified document: %s", first["doctype"], out)
+	}
+	guidance := obj["guidance"].([]any)[0].(map[string]any)
+	if next, _ := guidance["next_step"].(string); !strings.Contains(next, "--set-doctype") {
+		t.Errorf("the guidance for an unclassified document does not offer --set-doctype: %q", next)
+	}
+
+	out, errw, code := run(t, "--vault", vault, "ingest",
+		"--set-doctype", "correspondence", "--set-owner", "alex-rao",
+		"--set-identifier", "Family Recipes", "--set-year", "2019",
+		"--select", "all", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	obj = decode(t, out)
+	if obj["executed"] != true {
+		t.Fatalf("nothing was filed: %s", out)
+	}
+	prop := obj["proposals"].([]any)[0].(map[string]any)
+	if prop["classifier"] != "human" {
+		t.Errorf("classifier = %v, want human: %s", prop["classifier"], out)
+	}
+	if conf, _ := prop["confidence"].(float64); conf != 0 {
+		t.Errorf("confidence = %v, want 0 for a human assignment", conf)
+	}
+	why := prop["why"].(map[string]any)["doctype"].(map[string]any)
+	if why["source"] != "human" {
+		t.Errorf("why.doctype.source = %v, want human", why["source"])
+	}
+	if detail, _ := why["detail"].(string); !strings.Contains(detail, "--set-doctype") {
+		t.Errorf("the why line reads as an inference: %q", detail)
+	}
+
+	dest := obj["filed"].([]any)[0].(map[string]any)["to"].(string)
+	if !strings.Contains(filepath.Base(dest), "Family-Recipes") || !strings.Contains(dest, "2019") {
+		t.Errorf("the stated identifier and year did not reach the filename: %s", dest)
+	}
+	side, err := os.ReadFile(filepath.Join(filepath.Dir(dest), "."+filepath.Base(dest)+".meta.yaml"))
+	if err != nil {
+		t.Fatalf("sidecar: %v", err)
+	}
+	if !strings.Contains(string(side), "classifier: human") {
+		t.Errorf("the sidecar does not record human provenance:\n%s", side)
+	}
+	if strings.Contains(string(side), "confidence:") {
+		t.Errorf("the sidecar scores a decision a person made:\n%s", side)
+	}
+	if !strings.Contains(string(side), "text:") {
+		t.Errorf("overriding the doctype cost the sidecar its extracted text:\n%s", side)
+	}
+	warnings, _ := obj["warnings"].([]any)
+	joined := fmt.Sprint(warnings...)
+	if !strings.Contains(joined, "doctypes:") {
+		t.Errorf("no suggestion that the vault could be taught this doctype: %v", warnings)
+	}
+}
+
+// TestIngestSetDoctypeRefusesWhatItCannotHonour: a human may pick any real
+// doctype and any real person, and nothing else. An invented doctype is the
+// same defect whichever direction it comes from (Global Constraint 8).
+func TestIngestSetDoctypeRefusesWhatItCannotHonour(t *testing.T) {
+	vault := initDemo(t)
+	src := filepath.Join(t.TempDir(), "lemon drizzle.txt")
+	if err := os.WriteFile(src, []byte(recipeText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "unknown doctype",
+			args: []string{"--set-doctype", "recipe"},
+			want: []string{"recipe", "catalog", "vault.yaml"},
+		},
+		{
+			name: "unknown owner",
+			args: []string{"--set-doctype", "correspondence", "--set-owner", "Robin Fox"},
+			want: []string{"Robin Fox", "Alex Rao"},
+		},
+		{
+			name: "reindex cannot re-file",
+			args: []string{"--set-doctype", "correspondence", "--reindex"},
+			want: []string{"--reindex", "kagaz move"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"--vault", vault, "ingest", "--json", "--select", "all"}, tc.args...)
+			out, errw, code := run(t, append(args, src)...)
+			if code == ExitOK {
+				t.Fatalf("accepted: %s", out)
+			}
+			obj := decode(t, errw)
+			if obj["status"] != StatusError {
+				t.Fatalf("status = %v, want error: %s", obj["status"], out)
+			}
+			msg, _ := obj["message"].(string)
+			for _, want := range tc.want {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message %q does not mention %q", msg, want)
+				}
+			}
+			if _, err := os.Stat(src); err != nil {
+				t.Fatalf("a rejected invocation moved the source: %v", err)
+			}
+		})
+	}
+}
+
+// TestIngestOverridesApplyToASelectedSubset: the overrides are per-invocation
+// and --select still chooses which of those proposals are executed. A GUI
+// triage view depends on both being true at once.
+func TestIngestOverridesApplyToASelectedSubset(t *testing.T) {
+	vault := initDemo(t)
+	inbox := t.TempDir()
+	for _, name := range []string{"lemon drizzle.txt", "plum jam.txt"} {
+		if err := os.WriteFile(filepath.Join(inbox, name), []byte(recipeText), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, errw, code := run(t, "--vault", vault, "ingest",
+		"--set-doctype", "correspondence", "--set-owner", "Sam Rao",
+		"--select", "1", "--json", inbox)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	if n := len(obj["proposals"].([]any)); n != 2 {
+		t.Fatalf("got %d proposals, want 2: %s", n, out)
+	}
+	filed, _ := obj["filed"].([]any)
+	if len(filed) != 1 {
+		t.Fatalf("filed %d documents, want only the selected one: %s", len(filed), out)
+	}
+	for _, p := range obj["proposals"].([]any) {
+		if got := p.(map[string]any)["classifier"]; got != "human" {
+			t.Errorf("classifier = %v, want human on every proposal in the invocation", got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(inbox, "plum jam.txt")); err != nil {
+		t.Errorf("an unselected proposal was filed anyway: %v", err)
 	}
 }

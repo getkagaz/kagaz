@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
+	"github.com/getkagaz/kagaz/internal/vaultkit/doctypes"
 	"github.com/getkagaz/kagaz/internal/vaultkit/ingest"
 	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 	"github.com/getkagaz/kagaz/internal/vaultkit/search"
@@ -99,14 +100,51 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 				cause = fmt.Sprintf("Kagaz does not read %s files (it reads %s), so there was nothing to classify", ext, readableFormats)
 			}
 		}
-		out = append(out, Guidance{
-			Source: p.Source,
-			Cause:  cause,
-			NextStep: fmt.Sprintf("kagaz move %s <destination>   (the destination must be given: %s has neither a conventional filename nor a sidecar, so kagaz cannot derive one)",
-				shellQuote(p.Source), filepath.Base(p.Source)),
-		})
+		next := fmt.Sprintf("kagaz move %s <destination>   (the destination must be given: %s has neither a conventional filename nor a sidecar, so kagaz cannot derive one)",
+			shellQuote(p.Source), filepath.Base(p.Source))
+		if p.DocType == doctypes.Unclassified && !noTextExtracted(p) {
+			// "kagaz read it and could not tell" now has an answer that does not
+			// require the user to know the vault's naming grammar: say what the
+			// document is and let the conventions build the path, exactly as they
+			// do for a classified one.
+			//
+			// Only when there was text. A file Kagaz cannot read at all would be
+			// filed with an empty sidecar and an identifier scraped off its name,
+			// which is not what the user wants offered first; the cause above says
+			// the format is the problem, and the destination-explicit `kagaz move`
+			// remains the answer that matches it.
+			next = fmt.Sprintf("kagaz ingest %s --set-doctype <name> --yes   (say what it is; kagaz builds the destination from its own conventions and records the classification as human)",
+				shellQuote(p.Source))
+		}
+		out = append(out, Guidance{Source: p.Source, Cause: cause, NextStep: next})
 	}
 	return out
+}
+
+// teachHint is the one line that says a human assignment does not teach the
+// vault anything by itself.
+//
+// It is a suggestion and nothing else. Kagaz does not edit a user's vault.yaml
+// on their behalf -- a tool that quietly rewrites your configuration because it
+// noticed a pattern is exactly the kind of thing this project refuses to be --
+// so the next-time fix is named, and the user decides.
+func teachHint(docType string, proposals []ingest.Proposal) []string {
+	if docType == "" {
+		return nil
+	}
+	n := 0
+	for _, p := range proposals {
+		if p.Classifier == ingest.ClassifierHuman && !p.Skip {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"you assigned %q to %d document(s); Kagaz does not learn from that on its own. "+
+			"To have it recognise them next time, add a distinctive phrase from these documents to the %q entry under doctypes: in vault.yaml "+
+			"(kagaz never edits your config for you)", docType, n, docType)}
 }
 
 // readableFormats is the one place the "what Kagaz reads" sentence is written,
@@ -226,6 +264,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 		selectExpr string
 		reindex    bool
 		mut        mutationFlags
+		set        ingest.Overrides
 	)
 
 	cmd := &cobra.Command{
@@ -236,7 +275,13 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 			"move.Engine under a single manifest.\n\n" +
 			"At the review prompt (or via --select) answer `all`, `none`, or a subset such\n" +
 			"as `1,3-5`. --reindex regenerates the sidecars of documents already filed in\n" +
-			"the vault instead of filing new ones; it never moves a document.",
+			"the vault instead of filing new ones; it never moves a document.\n\n" +
+			"When a document comes back unclassified -- the honest answer when no tier can\n" +
+			"tell what it is -- say what it is yourself: --set-doctype files every path in\n" +
+			"the invocation as that doctype, and --set-owner/--set-identifier/--set-year\n" +
+			"replace the matching inference. The category always comes from the vault's\n" +
+			"doctype catalog, never from a flag, and the sidecar records the classification\n" +
+			"as `human` so a decision you made is never filed away as one a model made.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := rt.Config()
@@ -249,6 +294,15 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 			}
 
 			paths := args
+			if reindex && !set.Empty() {
+				// --reindex rewrites the sidecar of a document already filed, and
+				// never moves it. Stamping a stated doctype into that sidecar
+				// would leave the document sitting at a path its own facts no
+				// longer agree with, which is a re-filing decision the user has
+				// not been shown. `kagaz move` is where that decision is made.
+				return fmt.Errorf("--set-* cannot be combined with --reindex: reindex rewrites the sidecar of a document that is already filed and never moves it, " +
+					"so a stated doctype would leave it at the wrong path. Use `kagaz move` to re-file a filed document")
+			}
 			if reindex {
 				if len(paths) == 0 {
 					paths, err = vaultDocuments(cmd.Context(), cfg)
@@ -268,7 +322,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 			}
 
 			rt.Printf("analysing %d path(s)…\n", len(paths))
-			proposals, err := pipeline.Analyze(cmd.Context(), paths)
+			proposals, err := pipeline.AnalyzeWith(cmd.Context(), paths, set)
 			if err != nil {
 				return err
 			}
@@ -277,6 +331,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 				payload.Proposals = []ingest.Proposal{}
 			}
 			payload.Guidance = guidanceFor(payload.Proposals)
+			teach := teachHint(set.DocType, payload.Proposals)
 
 			if reindex {
 				return runReindex(rt, cfg, payload, &mut)
@@ -291,6 +346,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 			case mut.proposeOnly:
 				return rt.Emit(&Response{
 					Command: "ingest", Status: StatusProposed, Payload: payload, Human: previewIngest,
+					Warnings: teach,
 				})
 			case selectExpr != "":
 				indices, err = ingest.ParseSelection(selectExpr, len(proposals))
@@ -306,7 +362,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 				return rt.Emit(&Response{
 					Command: "ingest", Status: StatusConfirmationRequired, Payload: payload,
 					Human: previewIngest, Exit: ExitConfirmationRequired,
-					Warnings: []string{"nothing was changed: re-run with --select all (or a subset like 1,3-5), or --yes"},
+					Warnings: append([]string{"nothing was changed: re-run with --select all (or a subset like 1,3-5), or --yes"}, teach...),
 				})
 			default:
 				if err := previewIngest(rt.Out, payload); err != nil {
@@ -326,6 +382,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 			if len(indices) == 0 {
 				return rt.Emit(&Response{
 					Command: "ingest", Status: StatusProposed, Payload: payload, Human: humanIngest,
+					Warnings: teach,
 				})
 			}
 
@@ -350,6 +407,7 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 				warnings = append(warnings,
 					"nothing was filed: every selected proposal was skipped (see skip_reason on each)")
 			}
+			warnings = append(warnings, teach...)
 			return rt.Emit(&Response{
 				Command: "ingest", Status: StatusOK, Payload: payload,
 				Warnings: warnings, Human: humanIngest,
@@ -360,6 +418,14 @@ func newIngestCommand(rt *Runtime) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&selectExpr, "select", "", "which proposals to file: all, none, or a subset like 1,3-5")
 	f.BoolVar(&reindex, "reindex", false, "regenerate sidecars for documents already in the vault")
+	f.StringVar(&set.DocType, "set-doctype", "", "file every named path as this doctype instead of classifying it (must exist in the vault's catalog)")
+	// A repeated flag rather than a comma-separated list: a person's display
+	// name is free text that may itself contain a comma or a semicolon, and a
+	// separator that can appear inside a value is a parser that will one day
+	// split somebody's name in half. StringArray does not split on commas.
+	f.StringArrayVar(&set.Owners, "set-owner", nil, "owner for every named path, by display name or tag; repeat the flag for several owners")
+	f.StringVar(&set.Identifier, "set-identifier", "", "identifier for every named path, instead of inferring one")
+	f.IntVar(&set.Year, "set-year", 0, "four-digit year for every named path, instead of inferring one")
 	mut.register(cmd)
 	return cmd
 }

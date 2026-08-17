@@ -102,7 +102,11 @@ special to any other tool.
 Ingest writes a `.<filename>.meta.yaml` sidecar next to (almost) every
 document, holding the extracted text, the OCR/classifier engine used, the
 detected doctype/category/confidence, extracted structured fields, and the
-document's SHA256 at extraction time. Sidecars exist so that `kagaz find`
+document's SHA256 at extraction time. The `classifier` field names the tier
+that decided the doctype (`rules`, `apple`, `mlx:<model>`, `ollama:<model>`)
+or `human` when you stated it yourself with `kagaz ingest --set-doctype`; a
+`human` classification records no `confidence`, because a person's decision
+is not a probability. Sidecars exist so that `kagaz find`
 never has to re-OCR or re-classify at query time. They are:
 
 - **Disposable.** Delete one and `kagaz ingest --reindex` regenerates it.

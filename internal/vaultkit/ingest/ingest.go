@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,6 +92,11 @@ const (
 	// SourceModTime means the file's modification time supplied it -- a guess,
 	// not a fact about the document.
 	SourceModTime = "file-mtime"
+	// SourceHuman means a person stated the value on the command line (the
+	// --set-* flags). It is not an inference and was not checked against the
+	// document; it is the one source that outranks every other because a person
+	// looked at the document and said so.
+	SourceHuman = "human"
 	// SourceNone means nothing supplied it.
 	SourceNone = "none"
 )
@@ -123,7 +129,8 @@ type Proposal struct {
 	Category   string  `json:"category"`
 	Confidence float64 `json:"confidence"`
 	// Classifier is the backend that produced the answer ("rules",
-	// "apple", "mlx:<model>", "ollama:<model>").
+	// "apple", "mlx:<model>", "ollama:<model>"), or ClassifierHuman when the
+	// user stated the doctype with --set-doctype and no tier decided it.
 	Classifier string `json:"classifier"`
 	// OCREngine is the extraction backend ("pdftotext", "vision",
 	// "ollama:<model>", "none").
@@ -252,6 +259,23 @@ func (p *Pipeline) now() time.Time {
 // The one error it returns is a configuration problem that applies to every
 // file alike, such as a forced classifier engine that is not installed.
 func (p *Pipeline) Analyze(ctx context.Context, paths []string) ([]Proposal, error) {
+	return p.AnalyzeWith(ctx, paths, Overrides{})
+}
+
+// AnalyzeWith is Analyze with facts the user has stated rather than inferred.
+//
+// The overrides apply to every path in the call. Everything not overridden is
+// still inferred exactly as Analyze infers it, and extraction and field
+// extraction still run in full: a person naming the doctype says what the
+// document is, not that its text and fields are unwanted.
+//
+// Invalid overrides are rejected before any file is read, so a mistyped doctype
+// or an unknown owner costs a message rather than a batch of OCR.
+func (p *Pipeline) AnalyzeWith(ctx context.Context, paths []string, ov Overrides) ([]Proposal, error) {
+	ov, err := ov.resolve(p.Cfg, p.Catalog)
+	if err != nil {
+		return nil, err
+	}
 	files, err := p.collect(paths)
 	if err != nil {
 		return nil, err
@@ -266,7 +290,7 @@ func (p *Pipeline) Analyze(ctx context.Context, paths []string) ([]Proposal, err
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("ingest: %w", err)
 		}
-		prop, err := p.analyzeOne(ctx, path)
+		prop, err := p.analyzeOne(ctx, path, ov)
 		if err != nil {
 			// Only a whole-vault problem reaches here.
 			return nil, err
@@ -340,7 +364,11 @@ func skipDir(name string) bool {
 }
 
 // analyzeOne builds one proposal. It reads; it never writes.
-func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error) {
+//
+// ov holds the already-validated facts the user stated. Each one replaces the
+// corresponding inference and records that a person supplied it; nothing else
+// changes, including OCR and field extraction, which run either way.
+func (p *Pipeline) analyzeOne(ctx context.Context, path string, ov Overrides) (Proposal, error) {
 	prop := Proposal{Source: path}
 
 	st, err := os.Stat(path)
@@ -395,21 +423,42 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error
 		Source: SourceClassifier,
 		Detail: fmt.Sprintf("classified as %q by the %s tier with confidence %.2f", cls.DocType, cls.Engine, cls.Confidence),
 	}
+	if ov.DocType != "" {
+		p.applyDocTypeOverride(&prop, ov.DocType, cls)
+	}
 
-	if cls.DocType == doctypes.Unclassified || cls.Category == "" {
+	if prop.DocType == doctypes.Unclassified || prop.Category == "" {
 		prop.Skip = true
 		prop.SkipReason = "the document type could not be determined, so no destination is proposed; " +
-			"filing it under a guessed category would be inventing one. Classify it yourself with `kagaz move`, " +
+			"filing it under a guessed category would be inventing one. Say what it is with " +
+			"`kagaz ingest --set-doctype <name>`, file it by hand with `kagaz move`, " +
 			"or add a doctype to vault.yaml."
 		prop.Why.DocType.Detail = fmt.Sprintf("no tier reached the confidence threshold; the %s tier returned %s", cls.Engine, doctypes.Unclassified)
 		return prop, nil
 	}
 
 	owners, ownerWhy := inferOwners(p.Cfg, path, res.Text)
+	if len(ov.Owners) > 0 {
+		owners, ownerWhy = ov.Owners, statedOwners(ov.Owners)
+	}
 	prop.Owners, prop.Why.Owners = owners, ownerWhy
 
-	prop.Year, prop.Why.Year = inferYear(cls.Fields, st.ModTime())
-	prop.Identifier, prop.Why.Identifier = inferIdentifier(cls.Fields, path, cls.DocType, owners)
+	prop.Year, prop.Why.Year = inferYear(prop.Fields, st.ModTime())
+	if ov.Year > 0 {
+		prop.Year, prop.Why.Year = ov.Year, Reason{
+			Value:  strconv.Itoa(ov.Year),
+			Source: SourceHuman,
+			Detail: fmt.Sprintf("year %d: you specified it with --set-year, so no year was inferred from the document or the file's date", ov.Year),
+		}
+	}
+	prop.Identifier, prop.Why.Identifier = inferIdentifier(prop.Fields, path, prop.DocType, owners)
+	if ov.Identifier != "" {
+		prop.Identifier, prop.Why.Identifier = ov.Identifier, Reason{
+			Value:  ov.Identifier,
+			Source: SourceHuman,
+			Detail: fmt.Sprintf("identifier %q: you specified it with --set-identifier, so no identifier was inferred from the fields or the file name", ov.Identifier),
+		}
+	}
 
 	doc := conventions.Doc{
 		DocType:    prop.DocType,
@@ -438,6 +487,78 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error
 	prop.TagsBefore = p.readSourceTags(path)
 	prop.TagsAfter, prop.DroppedTags = p.resultingTags(prop.TagsBefore, prop.Tags, prop.DroppedTags)
 	return prop, nil
+}
+
+// applyDocTypeOverride records a doctype a person stated rather than a tier
+// inferred.
+//
+// Three things change and no more:
+//
+//   - the doctype, and with it the category, which is read from the catalog and
+//     never from the flags. A person may pick any real doctype; nobody, human or
+//     model, may invent a category (Global Constraint 8);
+//   - the classifier, to ClassifierHuman, and the confidence, to zero. A human
+//     assignment is not a probability, and dressing it up as 1.00 would make it
+//     indistinguishable, in a sort or a filter, from a model that was very sure.
+//     The sidecar omits a zero confidence entirely, which is the honest record:
+//     `classifier: human` says who decided, and nothing pretends to have scored
+//     it;
+//   - the fields, which are re-extracted with the stated doctype's own patterns.
+//     The classifier's fields are kept where the stated doctype has nothing to
+//     say, so overriding never costs the user data that was already extracted.
+//
+// What the tier had answered is kept in the rationale rather than discarded: an
+// override over a confident "invoice" is a different event from an override over
+// "unclassified", and the record should be able to tell them apart.
+func (p *Pipeline) applyDocTypeOverride(prop *Proposal, name string, cls classify.Result) {
+	category, _ := p.Catalog.CategoryOf(name)
+	prop.DocType = name
+	prop.Category = category
+	prop.Classifier = ClassifierHuman
+	prop.Confidence = 0
+	prop.Fields = mergeFields(p.Catalog.ExtractFields(name, prop.Text), cls.Fields)
+
+	had := cls.DocType
+	if had == "" {
+		had = doctypes.Unclassified
+	}
+	prop.Why.DocType = Reason{
+		Value:  name,
+		Source: SourceHuman,
+		Detail: fmt.Sprintf("doctype %q: you specified it with --set-doctype, so it was not inferred (the %s tier had answered %q); "+
+			"the category %q comes from the vault's doctype catalog, not from the flag", name, cls.Engine, had, category),
+	}
+}
+
+// mergeFields combines the stated doctype's own extractions with the ones the
+// classifier produced. Deterministic values for the doctype the user chose win;
+// anything the classifier found that the chosen doctype does not extract is
+// kept rather than thrown away.
+func mergeFields(primary, extra map[string]string) map[string]string {
+	if len(primary) == 0 && len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(primary)+len(extra))
+	for k, v := range extra {
+		out[k] = v
+	}
+	for k, v := range primary {
+		out[k] = v
+	}
+	return out
+}
+
+// statedOwners builds the rationale for owners the user named.
+func statedOwners(owners []string) []Reason {
+	out := make([]Reason, 0, len(owners))
+	for _, name := range owners {
+		out = append(out, Reason{
+			Value:  name,
+			Source: SourceHuman,
+			Detail: fmt.Sprintf("owner %s: you specified it with --set-owner, so no owner inference ran against the file name or the document text", name),
+		})
+	}
+	return out
 }
 
 // readSourceTags reads the Finder tags already on a source file.

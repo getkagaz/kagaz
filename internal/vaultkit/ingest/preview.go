@@ -25,8 +25,15 @@ func (p Proposal) Preview() string {
 	}
 
 	fmt.Fprintf(&b, "   ->    %s\n", p.Dest)
-	fmt.Fprintf(&b, "   type  %s (%s, confidence %.2f, classifier %s, ocr %s)\n",
-		p.DocType, p.Category, p.Confidence, p.Classifier, p.OCREngine)
+	// A doctype the user stated has no confidence to report, and printing
+	// "confidence 0.00" next to it would read as a failed classification rather
+	// than a decision that was never a guess.
+	if p.Classifier == ClassifierHuman {
+		fmt.Fprintf(&b, "   type  %s (%s, assigned by you, ocr %s)\n", p.DocType, p.Category, p.OCREngine)
+	} else {
+		fmt.Fprintf(&b, "   type  %s (%s, confidence %.2f, classifier %s, ocr %s)\n",
+			p.DocType, p.Category, p.Confidence, p.Classifier, p.OCREngine)
+	}
 
 	if len(p.Owners) > 0 {
 		fmt.Fprintf(&b, "   owner %s\n", strings.Join(p.Owners, ", "))
