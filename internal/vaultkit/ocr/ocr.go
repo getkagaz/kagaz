@@ -23,7 +23,7 @@ import (
 // Result is extracted text plus its provenance.
 type Result struct {
 	Text       string
-	Engine     string // "plaintext" | "pdftotext" | "vision" | "ollama:<model>" | "none"
+	Engine     string // "plaintext" | "office" | "textutil" | "legacyoffice" | "pdftotext" | "vision" | "ollama:<model>" | "none"
 	Confidence float64
 	Pages      int
 }
@@ -43,21 +43,27 @@ type Extractor struct {
 	cfg    *config.Config
 	engine string // "" = auto; otherwise force "pdftotext" | "vision" | "ollama"
 
-	Text   *PlainText
-	PDF    *PDFToText
-	Vision *Vision
-	Ollama *Ollama
+	Text     *PlainText
+	Office   *Office
+	TextUtil *TextUtil
+	Legacy   *LegacyOffice
+	PDF      *PDFToText
+	Vision   *Vision
+	Ollama   *Ollama
 }
 
 // NewExtractor builds the extraction pipeline for a vault. engine forces a
 // specific backend; empty means automatic selection.
 func NewExtractor(cfg *config.Config, engine string) *Extractor {
 	return &Extractor{
-		cfg:    cfg,
-		engine: engine,
-		Text:   &PlainText{},
-		PDF:    &PDFToText{},
-		Vision: &Vision{Languages: cfg.OCR.VisionLanguages},
+		cfg:      cfg,
+		engine:   engine,
+		Text:     &PlainText{},
+		Office:   &Office{},
+		TextUtil: &TextUtil{},
+		Legacy:   &LegacyOffice{},
+		PDF:      &PDFToText{},
+		Vision:   &Vision{Languages: cfg.OCR.VisionLanguages},
 		Ollama: &Ollama{
 			Endpoint: cfg.OCR.Ollama.Endpoint,
 			Model:    cfg.OCR.Ollama.Model,
@@ -72,6 +78,12 @@ func (e *Extractor) Extract(ctx context.Context, path string) (Result, error) {
 	switch e.engine {
 	case "plaintext":
 		return e.Text.Extract(ctx, path)
+	case "office":
+		return e.Office.Extract(ctx, path)
+	case "textutil":
+		return e.TextUtil.Extract(ctx, path)
+	case "legacyoffice":
+		return e.Legacy.Extract(ctx, path)
 	case "pdftotext":
 		return e.PDF.Extract(ctx, path)
 	case "vision":
@@ -89,6 +101,30 @@ func (e *Extractor) Extract(ctx context.Context, path string) (Result, error) {
 	// second per page to read back what os.ReadFile already had.
 	if e.Text.Handles(path) {
 		return e.Text.Extract(ctx, path)
+	}
+
+	// An Office document is likewise returned unconditionally. An OOXML file has
+	// no PDF text layer and is not an image, so neither the PDF tier nor OCR can
+	// do anything with it.
+	if e.Office.Handles(path) {
+		return e.Office.Extract(ctx, path)
+	}
+
+	// The same reasoning claims the legacy binary formats, and for the same
+	// reason it must happen before the PDF and Vision tiers: there is no image
+	// to OCR and no text layer to find, so a `.doc` or `.xls` that fell through
+	// here would spend a second per page proving it.
+	//
+	// `.doc`/`.rtf`/`.odt` go to textutil, which macOS ships and Linux does
+	// not; `.xls`/`.ppt` are parsed in-process because no system tool reads
+	// them. Both claim their extensions whether or not the backing tool exists,
+	// so an absent textutil produces an error that names the missing tool
+	// rather than a generic "no text".
+	if e.TextUtil.Handles(path) {
+		return e.TextUtil.Extract(ctx, path)
+	}
+	if e.Legacy.Handles(path) {
+		return e.Legacy.Extract(ctx, path)
 	}
 
 	if ext == ".pdf" && e.PDF.Available() {
@@ -197,6 +233,9 @@ func HasUsableTextLayer(text string, pages int) bool {
 func (e *Extractor) Describe() []Status {
 	return []Status{
 		{Name: e.Text.Name(), Available: e.Text.Available(), Detail: e.Text.detail()},
+		{Name: e.Office.Name(), Available: e.Office.Available(), Detail: e.Office.detail()},
+		{Name: e.TextUtil.Name(), Available: e.TextUtil.Available(), Detail: e.TextUtil.detail()},
+		{Name: e.Legacy.Name(), Available: e.Legacy.Available(), Detail: e.Legacy.detail()},
 		{Name: e.PDF.Name(), Available: e.PDF.Available(), Detail: e.PDF.detail()},
 		{Name: e.Vision.Name(), Available: e.Vision.Available(), Detail: e.Vision.detail()},
 		{Name: e.Ollama.Name(), Available: e.Ollama.Available(), Detail: e.Ollama.detail()},

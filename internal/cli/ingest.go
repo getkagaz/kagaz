@@ -70,17 +70,22 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 			// Name the format, not the machine. "no text extractor on this
 			// machine" reads as a missing tool the user could install, which
 			// for a format Kagaz simply does not read is advice that can never
-			// come true. Kagaz reads PDFs, images and plain text; anything
-			// else is out of scope by design, not by configuration.
+			// come true. Kagaz reads what readableFormats lists; anything else
+			// is out of scope by design, not by configuration.
 			switch {
 			case ext == "":
-				cause = "Kagaz does not read files without an extension (it reads PDFs, images and plain text), so there was nothing to classify"
+				cause = "Kagaz does not read files without an extension (it reads " + readableFormats + "), so there was nothing to classify"
+			case needsTextUtil(ext):
+				// A real missing tool, but not one `kagaz doctor` can talk the
+				// user into installing: textutil ships with macOS and exists
+				// nowhere else, so say which machine can read the file.
+				cause = fmt.Sprintf("reading %s needs macOS's /usr/bin/textutil, which is not on this machine; ingest the file on a Mac, or re-save it as .docx or .txt and ingest that", ext)
 			case readableExt(ext):
 				// A format Kagaz does understand, so this really is a missing
 				// tool or an unreadable file, and `kagaz doctor` can help.
 				cause = fmt.Sprintf("no text could be extracted from this %s (run kagaz doctor to see which extraction tiers are available), so there was nothing to classify", ext)
 			default:
-				cause = fmt.Sprintf("Kagaz does not read %s files (it reads PDFs, images and plain text), so there was nothing to classify", ext)
+				cause = fmt.Sprintf("Kagaz does not read %s files (it reads %s), so there was nothing to classify", ext, readableFormats)
 			}
 		}
 		out = append(out, Guidance{
@@ -93,18 +98,43 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 	return out
 }
 
+// readableFormats is the one place the "what Kagaz reads" sentence is written,
+// so a new extraction tier cannot leave a guidance string quietly lying.
+const readableFormats = "PDFs, images, plain text, Office .docx/.xlsx/.pptx, " +
+	"and the legacy .doc/.rtf/.odt/.xls/.ppt"
+
 // readableExt reports whether ext names a format Kagaz has an extraction tier
 // for, so guidance can tell "we don't read this" apart from "we read this and
 // got nothing". ext is lowercased and includes the dot.
 func readableExt(ext string) bool {
-	for _, known := range ocr.PlainTextExtensions {
-		if ext == known {
-			return true
+	for _, list := range [][]string{
+		ocr.PlainTextExtensions,
+		ocr.OfficeExtensions,
+		ocr.TextUtilExtensions,
+		ocr.CompoundOfficeExtensions,
+	} {
+		for _, known := range list {
+			if ext == known {
+				return true
+			}
 		}
 	}
 	switch ext {
 	case ".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".gif", ".bmp", ".webp":
 		return true
+	}
+	return false
+}
+
+// needsTextUtil reports whether ext is one only the textutil tier reads *and*
+// textutil is missing here. It separates "this machine cannot read it" from
+// "Kagaz cannot read it", which are different pieces of advice: the first is
+// answered by a Mac, the second only by re-saving the file.
+func needsTextUtil(ext string) bool {
+	for _, known := range ocr.TextUtilExtensions {
+		if ext == known {
+			return !(&ocr.TextUtil{}).Available()
+		}
 	}
 	return false
 }
