@@ -15,20 +15,6 @@ import (
 	"unicode/utf16"
 )
 
-// CompoundOfficeExtensions are the legacy binary Office formats Kagaz parses
-// itself, lowercased and including the dot.
-//
-// `.doc` is deliberately absent: it is a compound file too, but its text lives
-// behind a piece table and a formatted-disk-page structure that no small parser
-// reads correctly, and macOS already ships one that does. TextUtil takes it.
-var CompoundOfficeExtensions = []string{".xls", ".ppt"}
-
-// compoundOfficeNames give each extension the name a user would recognise.
-var compoundOfficeNames = map[string]string{
-	".xls": "Excel 97-2003 workbook",
-	".ppt": "PowerPoint 97-2003 presentation",
-}
-
 // maxBIFFRecords bounds the record walk. A real workbook has thousands; the cap
 // is what stops a file whose records are all two bytes long from turning a
 // megabyte of stream into an unbounded loop.
@@ -105,7 +91,7 @@ func (l *LegacyOffice) Handles(path string) bool {
 }
 
 // Extract reads path's text.
-func (l *LegacyOffice) Extract(_ context.Context, path string) (Result, error) {
+func (l *LegacyOffice) Extract(ctx context.Context, path string) (Result, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	base := filepath.Base(path)
 
@@ -118,13 +104,13 @@ func (l *LegacyOffice) Extract(_ context.Context, path string) (Result, error) {
 	if err != nil {
 		if errors.Is(err, ErrNotCFB) {
 			return Result{Engine: "none"}, fmt.Errorf(
-				"legacyoffice: %s: %w -- a %s is an OLE2 compound file and this is not one",
-				base, err, compoundOfficeNames[ext])
+				"legacyoffice: %s: %w -- %s is an OLE2 compound file and this is not one",
+				base, err, officeFormatNoun(ext))
 		}
 		return Result{Engine: "none"}, fmt.Errorf("legacyoffice: %s: %w", base, err)
 	}
 
-	sink := &textSink{limit: MaxOfficeTextBytes}
+	sink := &textSink{limit: MaxOfficeTextBytes, ctx: ctx}
 	var pages int
 	switch ext {
 	case ".xls":
@@ -138,11 +124,14 @@ func (l *LegacyOffice) Extract(_ context.Context, path string) (Result, error) {
 	if err != nil {
 		return Result{Engine: "none"}, fmt.Errorf("legacyoffice: %s: %w", base, err)
 	}
+	if err := sink.err(); err != nil {
+		return Result{Engine: "none"}, fmt.Errorf("legacyoffice: %s: %w", base, err)
+	}
 
 	text := strings.TrimSpace(sink.String())
 	if text == "" {
-		return Result{Engine: "none"}, fmt.Errorf("legacyoffice: %s: %w (the %s carries no text)",
-			base, ErrNoText, compoundOfficeNames[ext])
+		return Result{Engine: "none"}, fmt.Errorf("legacyoffice: %s: %w (%s carries no text)",
+			base, ErrNoText, officeFormatNoun(ext))
 	}
 	if pages < 1 {
 		pages = 1
@@ -156,14 +145,31 @@ func (l *LegacyOffice) detail() string {
 		" (OLE2 compound files) with no external tool"
 }
 
-// readCapped reads at most max bytes of path.
+// readCapped reads at most max bytes of path, and refuses a file that is
+// larger rather than returning its prefix.
+//
+// The prefix is the trap: a legitimate 80 MB workbook truncated at 64 MiB
+// parses as a compound file whose sector chains run off the end, so the user is
+// told their file is corrupt when it is merely bigger than Kagaz reads. Those
+// are different problems with different answers, and only one of them is true.
 func readCapped(path string, max int) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return io.ReadAll(io.LimitReader(f, int64(max)))
+
+	// One byte past the cap is enough to prove the file exceeds it.
+	data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > max {
+		return nil, fmt.Errorf(
+			"the file is larger than the %d MiB this tier reads, so it was not parsed (it is not corrupt: it is too big)",
+			max>>20)
+	}
+	return data, nil
 }
 
 // biffRecord is one BIFF record's type and payload. The payload is a subslice
@@ -237,20 +243,35 @@ func extractXLS(doc *cfbFile, sink *textSink) (int, error) {
 	// Cells are collected per row so a row comes out as a row. Rows are kept in
 	// a map because BIFF does not guarantee row order and a classifier reading
 	// a jumbled sheet loses the label/value pairing that makes it legible.
+	//
+	// Accumulation is bounded by the sink, not by the file. The guard that used
+	// to stand here counted rows against maxBIFFRecords, which is dead code: the
+	// row key is a uint16, so the map can never hold more than 65536 rows while
+	// the cap is 1<<20. Meanwhile a 64 MiB workbook of MULRK records
+	// materialised some eleven million cells -- about 600 MB -- to emit at most
+	// the one megabyte the sink will take. Each cell is charged its own text
+	// plus the one separator byte it would cost to emit, so the accumulation is
+	// bounded by the same budget as the output.
 	rows := map[uint16][]cellValue{}
+	budget := sink.remaining()
+	spent := 0
 	sheets := 0
 	for _, r := range records {
 		if r.Type == biffBOUNDSHET {
 			sheets++
+			continue
+		}
+		if spent >= budget {
+			continue
 		}
 		row, cells, ok := decodeCells(r, sst)
 		if !ok {
 			continue
 		}
-		rows[row] = append(rows[row], cells...)
-		if len(rows) > maxBIFFRecords {
-			break
+		for _, c := range cells {
+			spent += len(c.text) + 1
 		}
+		rows[row] = append(rows[row], cells...)
 	}
 
 	order := make([]uint16, 0, len(rows))
@@ -588,7 +609,7 @@ func readSST(records []biffRecord) []string {
 		n = maxSSTStrings
 	}
 
-	out := make([]string, 0, minInt(n, 4096))
+	out := make([]string, 0, min(n, 4096))
 	for i := 0; i < n && !r.atEnd(); i++ {
 		s, ok := readSSTString(r)
 		if !ok {
@@ -768,12 +789,4 @@ func decodeCP1252(b []byte) string {
 		}
 	}
 	return sb.String()
-}
-
-// minInt is the smaller of two ints.
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

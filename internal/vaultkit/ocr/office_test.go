@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // zipEntry is one member of a fixture archive.
@@ -216,13 +217,13 @@ func TestOfficeRejectsHostileArchives(t *testing.T) {
 			name:    "empty file",
 			file:    "empty.docx",
 			raw:     []byte{},
-			wantMsg: "not a readable .docx archive",
+			wantMsg: "not a readable Office Open XML",
 		},
 		{
 			name:    "truncated archive",
 			file:    "cut.docx",
 			raw:     []byte("PK\x03\x04 this stops here"),
-			wantMsg: "not a readable .docx archive",
+			wantMsg: "not a readable Office Open XML",
 		},
 		{
 			name:    "zip without the expected part",
@@ -379,6 +380,154 @@ func TestOfficeCapsTotalText(t *testing.T) {
 	if len(res.Text) < MaxOfficeTextBytes/2 {
 		t.Errorf("text is only %d bytes; the cap should have been reached, not the document", len(res.Text))
 	}
+	if !utf8.ValidString(res.Text) {
+		t.Error("the truncated text is not valid UTF-8")
+	}
+}
+
+// TestOfficeCapCutsAtARuneBoundary: the cap must fall between runes, not
+// through one.
+//
+// A byte cut is invisible to a length check -- the old test measured only
+// len(text) and passed against a sink that emitted a half-encoded rune -- so
+// this fixture is deliberately Devanagari: every character is three bytes, the
+// cap lands inside one of them, and the damage is exactly the invalid UTF-8
+// that would then flow into the sidecar, the classifier and `--json`.
+func TestOfficeCapCutsAtARuneBoundary(t *testing.T) {
+	var body strings.Builder
+	body.WriteString(docxHeader)
+	// Three-byte runes with no ASCII anywhere, so no byte offset in the stream
+	// is a rune boundary by luck.
+	for i := 0; i < 30000; i++ {
+		body.WriteString(`<w:p><w:r><w:t>करदाताकानामऔरपतायहाँलिखाजाताहै</w:t></w:r></w:p>`)
+	}
+	body.WriteString(docxFooter)
+	path := writeZipFixture(t, "devanagari.docx", []zipEntry{{"word/document.xml", body.String()}})
+
+	res, err := (&Office{}).Extract(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(res.Text) < MaxOfficeTextBytes/2 {
+		t.Fatalf("text is only %d bytes; the cap was not reached", len(res.Text))
+	}
+	if !utf8.ValidString(res.Text) {
+		t.Fatalf("the truncated text is not valid UTF-8; it ends %q", res.Text[len(res.Text)-8:])
+	}
+}
+
+// TestTextSinkTruncatesWholeRunes is the unit-level statement of the same rule,
+// including the reviewer's exact reproduction.
+func TestTextSinkTruncatesWholeRunes(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		parts []string
+		want  string
+	}{
+		{"the reviewer's case", 4, []string{"ab", "€"}, "ab"},
+		{"a rune that fits exactly", 5, []string{"ab", "€"}, "ab€"},
+		{"a four-byte rune cut short", 6, []string{"abc", "😀"}, "abc"},
+		{"ASCII is cut where it lands", 4, []string{"abcdef"}, "abcd"},
+		{"nothing fits at all", 2, []string{"€"}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &textSink{limit: tc.limit}
+			for _, p := range tc.parts {
+				s.write(p)
+			}
+			if got := s.String(); got != tc.want {
+				t.Errorf("sink = %q, want %q", got, tc.want)
+			}
+			if !utf8.ValidString(s.String()) {
+				t.Errorf("sink holds invalid UTF-8: %q", s.String())
+			}
+			if s.b.Len() > tc.limit {
+				t.Errorf("sink holds %d bytes, over its %d-byte limit", s.b.Len(), tc.limit)
+			}
+		})
+	}
+}
+
+// TestTextSinkWriterIsBounded: the sink as an io.Writer must hold its cap and
+// no more, however much is written through it, because that is the only thing
+// standing between a 400 MB textutil conversion and the watcher's memory.
+func TestTextSinkWriterIsBounded(t *testing.T) {
+	s := &textSink{limit: 1024}
+	chunk := []byte(strings.Repeat("x", 64<<10))
+	for i := 0; i < 64; i++ { // 4 MiB written
+		n, err := s.Write(chunk)
+		if err != nil || n != len(chunk) {
+			t.Fatalf("Write = %d, %v; want a full, error-free write so the child is not killed", n, err)
+		}
+	}
+	if s.b.Len() != 1024 {
+		t.Errorf("the sink holds %d bytes after 4 MiB was written, want its 1024-byte cap", s.b.Len())
+	}
+}
+
+// TestOfficeReadsISOStrictOOXML: a Strict Open XML document -- what Word's
+// "Strict Open XML Document" and several public-sector templates produce --
+// carries its text under a different namespace and must still be read. Before
+// this it extracted nothing and was reported as carrying no text, which reads
+// as an empty document rather than an unread dialect.
+func TestOfficeReadsISOStrictOOXML(t *testing.T) {
+	strictDocx := `<?xml version="1.0"?><w:document xmlns:w="` + nsWordprocessingStrict + `"><w:body>` +
+		`<w:p><w:r><w:t>Invoice Number: INV-2019-0042</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>Total Amount Due</w:t></w:r></w:p></w:body></w:document>`
+	path := writeZipFixture(t, "strict.docx", []zipEntry{{"word/document.xml", strictDocx}})
+	res, err := (&Office{}).Extract(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, want := range []string{"INV-2019-0042", "Total Amount Due"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("text is missing %q:\n%s", want, res.Text)
+		}
+	}
+
+	strictXlsx := `<?xml version="1.0"?><worksheet xmlns="` + nsSpreadsheetStrict + `"><sheetData>` +
+		`<row><c t="inlineStr"><is><t>Acme Industries</t></is></c></row></sheetData></worksheet>`
+	path = writeZipFixture(t, "strict.xlsx", []zipEntry{{"xl/worksheets/sheet1.xml", strictXlsx}})
+	res, err = (&Office{}).Extract(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Extract(.xlsx): %v", err)
+	}
+	if !strings.Contains(res.Text, "Acme Industries") {
+		t.Errorf("strict spreadsheet text missing: %q", res.Text)
+	}
+
+	strictPptx := `<?xml version="1.0"?><p:sld xmlns:p="http://purl.oclc.org/ooxml/presentationml/main" xmlns:a="` +
+		nsDrawingStrict + `"><a:p><a:r><a:t>Quarterly Review</a:t></a:r></a:p></p:sld>`
+	path = writeZipFixture(t, "strict.pptx", []zipEntry{{"ppt/slides/slide1.xml", strictPptx}})
+	res, err = (&Office{}).Extract(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Extract(.pptx): %v", err)
+	}
+	if !strings.Contains(res.Text, "Quarterly Review") {
+		t.Errorf("strict presentation text missing: %q", res.Text)
+	}
+}
+
+// TestOfficeHonoursACancelledContext: a 64 MiB parse must stop when its caller
+// stops caring, or a cancelled `kagaz watch` keeps working long after it was
+// told to quit.
+func TestOfficeHonoursACancelledContext(t *testing.T) {
+	var body strings.Builder
+	body.WriteString(docxHeader)
+	for i := 0; i < 40000; i++ {
+		body.WriteString(`<w:p><w:r><w:t>line of ordinary invoice text</w:t></w:r></w:p>`)
+	}
+	body.WriteString(docxFooter)
+	path := writeZipFixture(t, "cancelled.docx", []zipEntry{{"word/document.xml", body.String()}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (&Office{}).Extract(ctx, path)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want it to wrap context.Canceled", err)
+	}
 }
 
 // TestExtractorRoutesOfficeBeforeOCR: an OOXML file must reach the Office
@@ -421,5 +570,31 @@ func TestOfficeDoctorLine(t *testing.T) {
 		if !strings.Contains(detail, want) {
 			t.Errorf("doctor detail %q does not mention %q", detail, want)
 		}
+	}
+}
+
+// TestOfficeRefusesAnEnormousArchive: the size of the file on disk is bounded
+// before zip.OpenReader is asked to read its central directory, the way cfb.go
+// bounds its input with maxCFBBytes. A file this size is not a document.
+func TestOfficeRefusesAnEnormousArchive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "huge.docx")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sparse: the bytes never have to exist on disk for the size check to see
+	// them.
+	if err := f.Truncate(maxOfficeSourceBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&Office{}).Extract(context.Background(), path)
+	if err == nil {
+		t.Fatal("a file past the source-size cap was accepted")
+	}
+	if !strings.Contains(err.Error(), "MiB") {
+		t.Errorf("the refusal does not name the size limit: %v", err)
 	}
 }

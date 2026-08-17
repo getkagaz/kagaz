@@ -151,3 +151,41 @@ func TestDescribeReportsTheNewTiers(t *testing.T) {
 		t.Error("textutil reported available with nothing on PATH")
 	}
 }
+
+// TestTextUtilRefusesALeadingDashFilename: a filename beginning with a dash
+// would be read by textutil as an option rather than as a file.
+//
+// Nothing reaches Extract with such a path today -- ingest.collect runs every
+// path through filepath.Abs -- but that is a property of code two packages
+// away, and the argv of a subprocess is not a thing to secure at a distance.
+func TestTextUtilRefusesALeadingDashFilename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "-convert.rtf")
+	if err := os.WriteFile(path, []byte("{\\rtf1 hello}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The guard must fire before the tool is even looked up, so the test is the
+	// same on Linux CI and on a Mac.
+	_, err := (&TextUtil{}).Extract(context.Background(), path)
+	if err == nil {
+		t.Fatal("a filename that would be read as an option was accepted")
+	}
+	if !strings.Contains(err.Error(), "option") {
+		t.Errorf("the refusal does not explain the dash: %v", err)
+	}
+}
+
+// TestTextUtilAcceptsOnlyTheSystemPath: textutil ships inside macOS and is not
+// a tool a user installs, so a `textutil` earlier on $PATH is somebody else's
+// program with the same name -- and the error message this tier prints promises
+// /usr/bin/textutil by name.
+func TestTextUtilAcceptsOnlyTheSystemPath(t *testing.T) {
+	stubLookPath(t, map[string]string{"textutil": "/opt/homebrew/bin/textutil"})
+	if (&TextUtil{}).Available() {
+		t.Error("a textutil somewhere other than /usr/bin was accepted")
+	}
+	stubLookPath(t, map[string]string{"textutil": textUtilPath})
+	if !(&TextUtil{}).Available() {
+		t.Errorf("%s was not accepted", textUtilPath)
+	}
+}

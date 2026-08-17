@@ -80,6 +80,17 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 				// user into installing: textutil ships with macOS and exists
 				// nowhere else, so say which machine can read the file.
 				cause = fmt.Sprintf("reading %s needs macOS's /usr/bin/textutil, which is not on this machine; ingest the file on a Mac, or re-save it as .docx or .txt and ingest that", ext)
+			case wrongContainer(p) != "":
+				// The extractor already said the bytes are not the format the
+				// name claims, and that warning is printed directly above this
+				// line. Sending the user to `kagaz doctor` here would contradict
+				// it: doctor would report the tier present and correct, and the
+				// user would go hunting for a tooling problem that does not
+				// exist. No machine can turn these bytes into that format.
+				cause = fmt.Sprintf(
+					"this %s is not %s inside, whatever its name says, so there was nothing to extract; "+
+						"the tier that reads %s ran and found some other format's bytes -- give the file the extension it actually is, or re-save it from the app that made it",
+					ext, wrongContainer(p), ext)
 			case readableExt(ext):
 				// A format Kagaz does understand, so this really is a missing
 				// tool or an unreadable file, and `kagaz doctor` can help.
@@ -99,9 +110,30 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 }
 
 // readableFormats is the one place the "what Kagaz reads" sentence is written,
-// so a new extraction tier cannot leave a guidance string quietly lying.
+// so a new extraction tier cannot leave a guidance string quietly lying. It is
+// kept in step with readableExt: every extension named here is one readableExt
+// accepts, and TestReadableFormatsMatchesReadableExt fails if they drift.
 const readableFormats = "PDFs, images, plain text, Office .docx/.xlsx/.pptx, " +
-	"and the legacy .doc/.rtf/.odt/.xls/.ppt"
+	"and the legacy .doc/.rtf/.rtfd/.odt/.wordml/.xls/.ppt"
+
+// wrongContainer describes the container a skipped file was supposed to be but
+// is not, when the extractor diagnosed exactly that, or "" when it did not.
+//
+// This is the one case where "no text could be extracted" must not send the
+// user to `kagaz doctor`: the file is not the format its name claims, every
+// tier is present and working, and the advice would contradict the warning
+// printed immediately above it.
+func wrongContainer(p ingest.Proposal) string {
+	for _, w := range p.Warnings {
+		switch {
+		case strings.Contains(w, ocr.ErrNotCFB.Error()):
+			return "an OLE2 compound file (which is what a .xls or .ppt is)"
+		case strings.Contains(w, ocr.ErrNotOOXML.Error()):
+			return "a ZIP of XML parts (which is what a .docx, .xlsx or .pptx is)"
+		}
+	}
+	return ""
+}
 
 // readableExt reports whether ext names a format Kagaz has an extraction tier
 // for, so guidance can tell "we don't read this" apart from "we read this and

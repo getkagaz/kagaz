@@ -137,9 +137,33 @@ func (f *cfbFile) sector(n uint32) ([]byte, bool) {
 // the header, then any DIFAT sectors chained after it.
 func (f *cfbFile) readFAT() error {
 	numFAT := binary.LittleEndian.Uint32(data32(f.data, 44))
-	fatSectors := make([]uint32, 0, 128)
 
-	for i := 0; i < 109; i++ {
+	// The FAT is indexed by sector number, so an entry past the last sector the
+	// file actually has can never be consulted: f.sector rejects anything at or
+	// past sectorCount, and readChain range-checks every index against the
+	// table's own length. That makes sectorCount a hard ceiling on the useful
+	// table, and therefore on how many FAT sectors are worth reading at all.
+	//
+	// Without that ceiling the DIFAT is an amplifier rather than an index: 109
+	// header slots plus a chain of up to sectorCount DIFAT sectors of 127
+	// entries each can name the same one valid FAT sector a million times, and
+	// each naming costs a whole sector's worth of table. Measured before this
+	// cap: a 4 MiB file allocated 564 MB, 134x its own size, from a daemon that
+	// runs unattended. numFAT is no brake -- it is a hint from the same hostile
+	// file, and 0xFFFFFFFF disarms it.
+	//
+	// De-duplicating the DIFAT is deliberately *not* the fix. f.fat is
+	// positional: dropping a repeat would shift every entry after it and
+	// mis-index a table the rest of the parser reads by sector number. The
+	// ceiling bounds the same attack without inventing a table no file has.
+	perFATSector := f.sectorSize / 4
+	maxFATSectors := (f.sectorCount() + perFATSector - 1) / perFATSector
+	if maxFATSectors < 1 {
+		maxFATSectors = 1
+	}
+
+	fatSectors := make([]uint32, 0, min(maxFATSectors, 128))
+	for i := 0; i < 109 && len(fatSectors) < maxFATSectors; i++ {
 		s := binary.LittleEndian.Uint32(f.data[76+i*4 : 80+i*4])
 		if s > cfbMaxRegSect {
 			continue
@@ -147,13 +171,13 @@ func (f *cfbFile) readFAT() error {
 		fatSectors = append(fatSectors, s)
 	}
 
-	// Follow the DIFAT chain. Bounded by the sector count and guarded by a
-	// visited set: a DIFAT sector that points at itself is a real corruption
-	// mode and must stop rather than loop.
+	// Follow the DIFAT chain. Bounded three ways: by the table ceiling above,
+	// by the sector count, and by a visited set -- a DIFAT sector that points at
+	// itself is a real corruption mode and must stop rather than loop.
 	next := binary.LittleEndian.Uint32(f.data[68:72])
 	seen := make(map[uint32]bool)
 	perSector := f.sectorSize/4 - 1
-	for hops := 0; next <= cfbMaxRegSect && hops <= f.sectorCount(); hops++ {
+	for hops := 0; next <= cfbMaxRegSect && hops <= f.sectorCount() && len(fatSectors) < maxFATSectors; hops++ {
 		if seen[next] {
 			return errors.New("compound file: the DIFAT chain is cyclic")
 		}
@@ -162,7 +186,7 @@ func (f *cfbFile) readFAT() error {
 		if !ok {
 			return fmt.Errorf("compound file: DIFAT sector %d is past the end of the file", next)
 		}
-		for i := 0; i < perSector; i++ {
+		for i := 0; i < perSector && len(fatSectors) < maxFATSectors; i++ {
 			s := binary.LittleEndian.Uint32(sec[i*4 : i*4+4])
 			if s > cfbMaxRegSect {
 				continue
@@ -201,8 +225,13 @@ func (f *cfbFile) readMiniFAT() error {
 	start := binary.LittleEndian.Uint32(f.data[60:64])
 	raw, err := f.readChain(start, 0)
 	if err != nil {
-		// A broken mini-FAT only costs us the small streams; the Workbook and
+		// Deliberately swallowed, and the signature keeps an error return only
+		// so the call site reads like its siblings: a broken mini-FAT costs us
+		// the small streams and nothing else, because the Workbook and
 		// PowerPoint Document streams are large and live in the main FAT.
+		// Failing the file here would refuse a document over damage to a part
+		// of the container it does not use.
+		_ = err
 		return nil
 	}
 	f.miniFAT = make([]uint32, 0, len(raw)/4)
@@ -225,6 +254,17 @@ func (f *cfbFile) readChain(start uint32, limit int) ([]byte, error) {
 		return nil, nil
 	}
 	var out []byte
+	if limit > 0 {
+		// Size the buffer once, from the smaller of what the caller wants and
+		// what the file can possibly hold. Growing a 60 MB stream one 512-byte
+		// sector at a time costs several copies of it in garbage, all of which
+		// is live at once during the copy.
+		hint := limit
+		if held := f.sectorCount() * f.sectorSize; hint > held {
+			hint = held
+		}
+		out = make([]byte, 0, hint)
+	}
 	visited := make(map[uint32]bool)
 	budget := f.sectorCount() + 1
 	for cur := start; cur <= cfbMaxRegSect; {

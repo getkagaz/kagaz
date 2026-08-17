@@ -703,6 +703,63 @@ func TestIngestGuidanceNamesTheCauseAndAWorkingNextStep(t *testing.T) {
 	}
 }
 
+// TestIngestGuidanceDoesNotContradictItsOwnWarning: a `.xls` that is not an
+// OLE2 container must not be answered with "run kagaz doctor".
+//
+// Because readableExt(".xls") is true, every `.xls` failure used to take the
+// doctor branch, so the guidance said "no text could be extracted from this
+// .xls (run kagaz doctor to see which extraction tiers are available)" directly
+// beneath a warning that had already said the file is not a compound file.
+// doctor would then report the legacyoffice tier present and working, and the
+// user would go hunting for a tooling problem that does not exist. The standing
+// rule is that an error never blames the machine for something no machine can
+// fix, and a `.csv` named `.xls` is exactly that.
+func TestIngestGuidanceDoesNotContradictItsOwnWarning(t *testing.T) {
+	vault := initDemo(t)
+	src := filepath.Join(t.TempDir(), "quarterly numbers.xls")
+	if err := os.WriteFile(src, []byte("Date,Amount\n2024-03-12,1250.00\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errw, code := run(t, "--vault", vault, "ingest", "--propose-only", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	guidance, _ := obj["guidance"].([]any)
+	if len(guidance) == 0 {
+		t.Fatalf("a .xls that is not a compound file produced no guidance: %s", out)
+	}
+	cause, _ := guidance[0].(map[string]any)["cause"].(string)
+	if strings.Contains(cause, "doctor") {
+		t.Errorf("the guidance sends the user to doctor for a file that is simply not a .xls: %q", cause)
+	}
+	if !strings.Contains(cause, "OLE2") {
+		t.Errorf("the guidance does not say what the file is not: %q", cause)
+	}
+}
+
+// TestReadableFormatsMatchesReadableExt: the sentence the user is shown must
+// list the formats readableExt actually accepts. It drifted once already --
+// .rtfd and .wordml were readable but unlisted -- and a guidance string that
+// quietly under-promises is a user re-saving a file they never had to.
+func TestReadableFormatsMatchesReadableExt(t *testing.T) {
+	for _, ext := range []string{".txt", ".md", ".docx", ".xlsx", ".pptx",
+		".doc", ".rtf", ".rtfd", ".odt", ".wordml", ".xls", ".ppt"} {
+		if !readableExt(ext) {
+			t.Errorf("readableExt(%q) = false, but Kagaz has a tier for it", ext)
+		}
+		if !strings.Contains(readableFormats, ext) && !strings.Contains(readableFormats, "plain text") {
+			t.Errorf("readableFormats does not mention %q: %q", ext, readableFormats)
+		}
+	}
+	for _, ext := range []string{".doc", ".rtf", ".rtfd", ".odt", ".wordml", ".xls", ".ppt",
+		".docx", ".xlsx", ".pptx"} {
+		if !strings.Contains(readableFormats, ext) {
+			t.Errorf("readableFormats omits %q, which readableExt accepts: %q", ext, readableFormats)
+		}
+	}
+}
+
 // TestIngestReadsPlainText: reading a .txt needs no tooling at all, and the
 // project's own fixture vault is made of them, yet ingest used to refuse one
 // with "no text extractor for .txt on this machine".
