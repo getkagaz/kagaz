@@ -60,10 +60,26 @@ All mutating and reasoning logic lives under `internal/vaultkit/`:
 - **`classify`** — the tiered classifier chain (`auto|apple|mlx|ollama|rules`)
   behind one interface; validates every result against the resolved catalog
   before it's trusted (Global Constraint 8).
-- **`ocr`** — text extraction: plain text read directly (`.txt`, `.md`, no
-  tooling at all), `pdftotext` (fast path for text-layer PDFs), Apple
-  Vision via `kagaz-machelper` (scanned images/PDFs), and an opt-in local
-  Ollama vision model, in that preference order.
+- **`ocr`** — text extraction, in preference order: plain text read directly
+  (`.txt`, `.md`, no tooling at all); modern Office documents (`.docx`,
+  `.xlsx`, `.pptx`) read as ZIP-of-XML with `archive/zip` + `encoding/xml`,
+  no external tool or Microsoft Office needed, so this tier is always
+  available; legacy binary Office (`.xls`, `.ppt`) parsed in-process as
+  OLE2/BIFF8 compound files; `.doc`/`.rtf`/`.rtfd`/`.odt`/`.wordml` converted
+  by macOS's `/usr/bin/textutil` (macOS-only — this slice is unavailable on
+  Linux); `pdftotext` (fast path for text-layer PDFs); Apple Vision via
+  `kagaz-machelper` (scanned images/PDFs); and an opt-in local Ollama vision
+  model. Office/legacy-Office documents are capped at 64 MiB on disk and a
+  64 MiB *decompressed* budget spent across the whole archive (ZIP or OLE2
+  compound file); going over either is a hard extraction error naming the
+  limit, not a silent truncation. Extracted text itself is capped at 1 MiB
+  (`MaxOfficeTextBytes`, shared with the plain-text tier's own cap) and text
+  past that point is dropped silently at the extraction layer; if what
+  survives is still over the sidecar's separate 256 KiB text cap, the
+  sidecar records that with its own `text_truncated` flag, the same
+  mechanism every other tier's output goes through. OpenDocument
+  spreadsheets and presentations (`.ods`, `.odp`) are not read by any tier —
+  only `.odt` is, via textutil.
 - **`tags`** — reads and writes Finder tags (the `com.apple.metadata:_kMDItemUserTags`
   extended attribute) and enforces the controlled vocabulary.
 - **`sidecar`** — reads/writes the `.<file>.meta.yaml` companion files.

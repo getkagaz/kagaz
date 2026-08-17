@@ -24,6 +24,12 @@ own, and no proprietary file format standing between you and your files.
   `kagaz index`) teaches an AI agent exactly how this vault is organized.
 - Local-first: classification and OCR run on-device; the only thing that
   ever touches the network is an explicit `kagaz model pull`.
+- Reads Office documents without Microsoft Office. Modern `.docx`/`.xlsx`/`.pptx`
+  are parsed in-process (no external tool, always available); the legacy
+  binary `.xls`/`.ppt` are also parsed in-process, and `.doc`/`.rtf`/`.rtfd`/`.odt`/`.wordml`
+  go through macOS's built-in `/usr/bin/textutil` (so that slice is macOS-only).
+  See [docs/architecture.md](docs/architecture.md#packages) for the tier
+  breakdown and its limits.
 
 ## What Kagaz is not
 

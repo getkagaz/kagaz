@@ -50,6 +50,15 @@ through `move.Engine` with a single manifest for the whole batch. Accepts
 via a flag, non-interactively). `--propose-only` stops after the preview.
 `--reindex` regenerates sidecars for already-ingested documents.
 
+Readable formats: PDFs, images, plain text, Office `.docx`/`.xlsx`/`.pptx`
+(read in-process, no Microsoft Office or external tool needed), and the
+legacy `.doc`/`.rtf`/`.rtfd`/`.odt`/`.wordml`/`.xls`/`.ppt` — the first five
+of those go through macOS's built-in `/usr/bin/textutil` and are macOS-only;
+`.xls`/`.ppt` are parsed in-process like the modern formats. A file whose
+format isn't in this list, or that can't be extracted for some other
+reason, is skipped with guidance in the batch review explaining why and
+what to do instead.
+
 ## `kagaz move`
 
 Relocates a document to a specific path, or re-derives its conventional
