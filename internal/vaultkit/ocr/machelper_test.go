@@ -170,3 +170,32 @@ func TestRunHelperSuccess(t *testing.T) {
 		t.Fatalf("stdout = %q, want the helper payload", out)
 	}
 }
+
+// TestHelperFailureNamesTheBinaryThatFailed: the message used to hardcode
+// kagaz-machelper, so a kagaz-machelper-mlx failure told the user to fix a
+// binary that was working -- in the tier most likely to fail.
+func TestHelperFailureNamesTheBinaryThatFailed(t *testing.T) {
+	tests := []struct {
+		name    string
+		failure HelperFailure
+		want    string
+	}{
+		{
+			"an empty Binary still names the default helper",
+			HelperFailure{Code: "no_text"},
+			HelperBinary + ": no_text",
+		},
+		{
+			"the MLX helper names itself",
+			HelperFailure{Binary: "kagaz-machelper-mlx", Code: "model_load_failed", Message: "no weights"},
+			"kagaz-machelper-mlx: model_load_failed: no weights",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.failure.Error(); got != tt.want {
+				t.Errorf("Error() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -44,16 +44,23 @@ mechanism and the invariants; `AGENTS.md` documents *this vault*.
 ## Invariants that hold regardless of how you connect
 
 - **You cannot bypass propose → preview → approve → execute.** Every
-  mutating call — CLI or MCP — previews before it commits, and requires
-  explicit approval (`--yes`/`--accept-proposal`, or the MCP tool's
-  confirmation argument) before touching a file. `--propose-only` (CLI) or
-  the propose-only tool call (MCP) always exits/returns without mutating.
+  mutation previews before it commits and requires explicit approval
+  (`--yes`/`--accept-proposal`) before touching a file. Approval is always a
+  CLI call: there is no MCP tool that mutates, so there is no MCP
+  confirmation argument that could execute one. `--propose-only` (CLI) and
+  every MCP tool always return without mutating.
 - **`resolve --for-send` / `resolve_for_send` cannot be auto-confirmed.**
   Requesting a confidential document for external handoff always returns a
   structured `confirmation_required` response instead of a path until an
   explicit confirmation is supplied, and an audit line is written either
-  way. There is no argument, flag, or tool parameter that skips it. See
-  [commands.md](commands.md#resolve---for-send).
+  way. There is no argument, flag, or tool parameter that skips it. The
+  `confirmation_required` response deliberately still names the document —
+  its vault-relative path, doctype and tags — while withholding
+  `resolved_path`: the ungated `find` tool already exposes exactly that
+  much, and a caller cannot meaningfully confirm something it has not been
+  told the identity of. The gate protects materialization and the audit
+  record, not the document's existence; do not "harden" it by blanking the
+  refusal. See [commands.md](commands.md#resolve---for-send).
 - **Every mutation is reversible.** `kagaz rollback <manifest>` undoes any
   manifest a mutating call produced.
 - **Nothing you do through Kagaz reaches the network**, except an explicit,

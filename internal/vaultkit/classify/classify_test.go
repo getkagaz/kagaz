@@ -376,7 +376,7 @@ func TestDecodeClassifyResponse(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := decodeClassifyResponse("apple", fixture(t, tc.file))
+			res, err := decodeClassifyResponse(ocr.HelperBinary, "apple", fixture(t, tc.file))
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -399,7 +399,7 @@ func TestDecodeClassifyResponse(t *testing.T) {
 	}
 
 	t.Run("empty doctype", func(t *testing.T) {
-		_, err := decodeClassifyResponse("apple", []byte(`{"contract":1,"doctype":"  "}`))
+		_, err := decodeClassifyResponse(ocr.HelperBinary, "apple", []byte(`{"contract":1,"doctype":"  "}`))
 		if err == nil || !contains(err.Error(), "no doctype") {
 			t.Fatalf("error = %v, want a no-doctype error", err)
 		}
@@ -429,7 +429,7 @@ func TestDecodeProbeResponse(t *testing.T) {
 }
 
 func TestHelperFailurePrefersStructuredError(t *testing.T) {
-	err := helperFailure(errors.New("exit status 3"), fixture(t, "classify_error.json"), "some noise")
+	err := helperFailure(ocr.HelperBinary, errors.New("exit status 3"), fixture(t, "classify_error.json"), "some noise")
 	var failure *ocr.HelperFailure
 	if !errors.As(err, &failure) {
 		t.Fatalf("error is %T, want *ocr.HelperFailure", err)
@@ -438,7 +438,7 @@ func TestHelperFailurePrefersStructuredError(t *testing.T) {
 		t.Fatalf("Code = %q, want model_unavailable", failure.Code)
 	}
 
-	err = helperFailure(errors.New("exit status 3"), nil, "boom\nsecond line")
+	err = helperFailure(ocr.HelperBinary, errors.New("exit status 3"), nil, "boom\nsecond line")
 	if !errors.As(err, &failure) {
 		t.Fatalf("error is %T, want *ocr.HelperFailure", err)
 	}
@@ -461,7 +461,7 @@ func TestDecodeFailuresCarryDistinguishableCodes(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := decodeClassifyResponse("apple", tc.data)
+			_, err := decodeClassifyResponse(ocr.HelperBinary, "apple", tc.data)
 			var failure *ocr.HelperFailure
 			if !errors.As(err, &failure) {
 				t.Fatalf("error is %T, want *ocr.HelperFailure", err)

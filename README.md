@@ -47,26 +47,50 @@ are not supported, on purpose — see the FAQ below.
 
 ## Install
 
+**Homebrew does not work yet.** No release has been tagged, and the
+`getkagaz/homebrew-kagaz` tap is only populated by the release workflow, so
+it is empty — `brew tap getkagaz/kagaz && brew install kagaz` fails with
+*No available formula*, and `--HEAD` cannot help because it still needs a
+formula from that tap. `Formula/kagaz.rb` in this repo is not installable
+either: its `url` and `sha256` are placeholders that the release workflow
+rewrites at tag time. **Build from source today.**
+
+### From source (the only path that works today)
+
+Needs **Go 1.23+** and **Xcode's Command Line Tools** (`xcode-select
+--install`); full Xcode is *not* required for the base install. `poppler`
+(`brew install poppler`) is optional and adds the fast `pdftotext` tier.
+
 ```
-brew tap getkagaz/kagaz
-brew install kagaz
+git clone https://github.com/getkagaz/kagaz.git
+cd kagaz
+
+go build -o bin/kagaz ./cmd/kagaz            # the CLI
+go build -o bin/kagaz-mcp ./cmd/kagaz-mcp    # the MCP server
+
+# Optional: the Swift helper (Apple Vision OCR + on-device classification).
+swift build --package-path machelper -c release
+
+# Put them on your PATH, e.g.
+cp bin/kagaz bin/kagaz-mcp machelper/.build/release/kagaz-machelper /usr/local/bin/
 ```
 
-This installs the `kagaz` CLI, the `kagaz-mcp` MCP server, and the
-`kagaz-machelper` Swift helper (Vision OCR + on-device classification).
+Then `kagaz doctor` reports which optional tiers it can see.
 
-**No release has been tagged yet, so there are no prebuilt bottles yet.**
-Until the first tagged release, the command above builds everything from
-source, which needs **Xcode's Command Line Tools** (full Xcode is not
-required — the Apple Foundation Models classifier builds its schema at run
-time with `DynamicGenerationSchema`, not the `@Generable` macro that needs
-full Xcode) and **Go** as build-time dependencies; Homebrew installs Go for
-you automatically, and most Macs already have Command Line Tools. Once
-bottles are published, the same command will need neither — see
-[docs/installation.md](docs/installation.md) for the full breakdown, the
-optional MLX tier (which genuinely does need full Xcode, unlike the base
-install — see the FAQ below), the menu-bar app, and building from source
-directly.
+### Homebrew (after the first tagged release — not available yet)
+
+Once a release is tagged, this will be the everyday path and will install
+the `kagaz` CLI, the `kagaz-mcp` MCP server and the `kagaz-machelper` Swift
+helper from a prebuilt bottle:
+
+```
+brew tap getkagaz/kagaz   # not yet available
+brew install kagaz        # not yet available
+```
+
+See [docs/installation.md](docs/installation.md) for the full breakdown,
+the optional MLX tier (which genuinely does need full Xcode, unlike the
+base install — see the FAQ below), and the menu-bar app.
 
 ## Quickstart
 
@@ -122,8 +146,12 @@ Full reference: [docs/commands.md](docs/commands.md).
   you empty.
 - **Every mutation is reversible** via `kagaz rollback`, and nothing mutates
   without a preview and an explicit approval first.
-- **Secrets never leave the Keychain.** No password appears in a filename,
-  sidecar, `INDEX.md`, manifest, or log — only a Keychain item name does.
+- **Secrets never leave the Keychain.** This is the design rule for
+  password-protected documents: no password would ever appear in a
+  filename, sidecar, `INDEX.md`, manifest, or log — only a Keychain item
+  name. **Not implemented yet.** Kagaz does not currently handle encrypted
+  documents at all; `encrypted_docs.password_store` is accepted in
+  `vault.yaml` and does nothing today.
 - **Sending a confidential document out of the vault always requires
   explicit confirmation and always writes an audit line** — there is no
   flag or JSON mode that bypasses either.
@@ -141,8 +169,10 @@ requires macOS 26, and macOS 26 is the last version of macOS that will run
 on Intel hardware at all. Rather than ship an Intel build that runs a
 permanently degraded, rules-only mode forever with no path to feature
 parity, Kagaz declares Apple silicon a hard requirement from the start.
-This was a considered decision, not an oversight — see the build plan in
-this repository's history for the reasoning in full.
+This was a considered decision, not an oversight; the constraint is stated
+in [docs/architecture.md](docs/architecture.md) and enforced by
+`Formula/kagaz.rb`'s `depends_on arch: :arm64` and `depends_on macos:
+:sequoia`.
 
 **Do I need to run a local LLM to use Kagaz?**
 
@@ -155,9 +185,10 @@ Ollama are opt-in for people who want them.
 
 No — see Privacy invariants above.
 
-**Does `brew install kagaz` need Xcode?**
+**Does building Kagaz need Xcode?**
 
-The base `kagaz` install: no. Building `kagaz.rb` from source needs Xcode's
+The base `kagaz` build: no. Building it — from source directly, or from
+`kagaz.rb` once Homebrew installs work — needs Xcode's
 Command Line Tools and Go — full Xcode is not required, and
 `Formula/kagaz.rb` declares no `depends_on xcode: :build`. The Apple
 Foundation Models classifier's guided generation is built at run time with
@@ -184,8 +215,9 @@ Tools path around this one. See
 
 One is planned, at `app/` — a SwiftUI `MenuBarExtra` holding zero vault
 logic of its own, shelling out to the `kagaz` CLI with `--json` the same as
-anything else that talks to a vault. **It has not been built yet** — `app/`
-is an empty placeholder directory in this repo today, not working code.
+anything else that talks to a vault. **It has not been built yet** — there
+is no `app/` directory in a clone, and no code for it anywhere in this
+repository.
 Once it exists it will still need signing, notarization and a Homebrew Cask
 (all needing an Apple Developer account) before it's distributable; see
 [docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md).

@@ -2,6 +2,13 @@
 // so that Kagaz can record *which* Keychain item unlocks an encrypted document
 // without ever handling the password itself.
 //
+// NOT WIRED UP YET. Nothing in Kagaz imports this package: encrypted-document
+// handling is unimplemented, and config's encrypted_docs.password_store /
+// KeepEncryptedDocs are parsed but have no consumer. The package is kept
+// deliberately, as the intended home for that feature, and because keeping the
+// no-secret-values invariant in code is cheaper than rediscovering it later.
+// Do not document the feature as working while this comment is here.
+//
 // Safety invariant 5: no function here returns a secret value. Item names go in
 // sidecars and lint output; passwords never do.
 package keychain

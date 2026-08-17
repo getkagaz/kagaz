@@ -213,7 +213,9 @@ func checkHelper() Check {
 			Detail: ocr.HelperBinary + " not found (looked in " + helperHint() + ")",
 			Impact: "no Apple Vision OCR and no Apple Foundation Models classifier; " +
 				"pdftotext and the offline rules classifier still work",
-			Fix: "brew install kagaz (the formula builds and installs the helper)",
+			Fix: "build it from a checkout: swift build --package-path machelper -c release, " +
+				"then copy machelper/.build/release/" + ocr.HelperBinary + " onto your PATH " +
+				"(Homebrew packaging arrives with the first tagged release)",
 		}
 	}
 	return Check{Name: "kagaz-machelper", Status: CheckOK, Detail: path}

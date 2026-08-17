@@ -132,5 +132,5 @@ func (m *MLX) Classify(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return decodeClassifyResponse(m.engine(), out)
+	return decodeClassifyResponse(MLXHelperBinary, m.engine(), out)
 }

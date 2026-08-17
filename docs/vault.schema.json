@@ -216,17 +216,17 @@
     },
     "encrypted_docs": {
       "type": "object",
-      "description": "How password-protected documents are handled.",
+      "description": "NOT IMPLEMENTED. Reserved for password-protected document handling. These fields are parsed and validated so a vault.yaml stays valid, but nothing reads them: Kagaz has no encrypted-document support today and setting them changes no behaviour.",
       "additionalProperties": false,
       "properties": {
         "keep_encrypted": {
           "type": "boolean",
-          "description": "Whether Kagaz leaves password-protected documents encrypted in place rather than prompting to decrypt.",
+          "description": "NOT IMPLEMENTED. Would leave password-protected documents encrypted in place rather than prompting to decrypt.",
           "default": false
         },
         "password_store": {
           "type": "string",
-          "description": "Where the password for an encrypted document is looked up. Only \"keychain\" is implemented: passwords never appear in a filename, sidecar, INDEX.md, manifest or log — only a Keychain item name does.",
+          "description": "NOT IMPLEMENTED. Where the password for an encrypted document would be looked up; no store is implemented, and \"keychain\" is simply the only accepted value. The design rule for when it is built: passwords never appear in a filename, sidecar, INDEX.md, manifest or log — only a Keychain item name does.",
           "default": "keychain"
         }
       }

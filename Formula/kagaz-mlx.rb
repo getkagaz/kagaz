@@ -3,7 +3,10 @@
 # Kagaz MLX classifier tier — opt-in, never on the default install path.
 #
 # STATUS: no release has been tagged and no bottle has ever been published.
-# `url`/`sha256` name the tarball the first tagged release will produce.
+# `url`/`sha256` name the tarball the first tagged release will produce, so
+# this formula is not installable yet in any form — the tap it would come
+# from is empty until release.yml populates it. Build from source instead;
+# see docs/installation.md.
 #
 # Toolchain note: this formula requires full Xcode, and the *base* `kagaz`
 # formula deliberately does not. Two separate reasons converge here:

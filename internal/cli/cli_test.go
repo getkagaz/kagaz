@@ -670,7 +670,10 @@ func TestRollbackReportsSkippedRowsInThePayload(t *testing.T) {
 
 func TestIngestGuidanceNamesTheCauseAndAWorkingNextStep(t *testing.T) {
 	vault := initDemo(t)
-	src := filepath.Join(t.TempDir(), "random notes.txt")
+	// A format Kagaz genuinely has no reader for. The error must name the
+	// format, not the machine: "no text extractor on this machine" reads as a
+	// missing tool the user could install, and no install fixes this.
+	src := filepath.Join(t.TempDir(), "random notes.xyz")
 	if err := os.WriteFile(src, []byte("just some words\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -681,18 +684,57 @@ func TestIngestGuidanceNamesTheCauseAndAWorkingNextStep(t *testing.T) {
 	obj := decode(t, out)
 	guidance, _ := obj["guidance"].([]any)
 	if len(guidance) == 0 {
-		t.Skipf("this machine classified the .txt, so there is no dead end to check: %s", out)
+		t.Skipf("this machine classified the file, so there is no dead end to check: %s", out)
 	}
 	g := guidance[0].(map[string]any)
 	next, _ := g["next_step"].(string)
 	if !strings.Contains(next, "<destination>") {
 		t.Fatalf("the suggested next step is the destination-less form that fails: %q", next)
 	}
-	if cause, _ := g["cause"].(string); !strings.Contains(cause, "no text extractor") {
-		t.Fatalf("the cause does not name the missing extractor: %q", cause)
+	cause, _ := g["cause"].(string)
+	if !strings.Contains(cause, ".xyz") {
+		t.Fatalf("the cause does not name the format Kagaz cannot read: %q", cause)
+	}
+	if strings.Contains(cause, "on this machine") {
+		t.Fatalf("the cause blames the machine for a format no machine can read: %q", cause)
 	}
 	if got := tidyReasons("no text extracted: no text extracted"); got != "no text extracted" {
 		t.Fatalf("doubled message not collapsed: %q", got)
+	}
+}
+
+// TestIngestReadsPlainText: reading a .txt needs no tooling at all, and the
+// project's own fixture vault is made of them, yet ingest used to refuse one
+// with "no text extractor for .txt on this machine".
+func TestIngestReadsPlainText(t *testing.T) {
+	vault := initDemo(t)
+	src := filepath.Join(t.TempDir(), "acme invoice.txt")
+	body := "ACME CORP\n123 Industrial Way\n\nTAX INVOICE\n\nInvoice Number: INV-2024-0912\n" +
+		"Date: 12/03/2024\nDue Date: 26/03/2024\n\nBill To:\nAlex Rao\n44 Sample Street\n\n" +
+		"Description                 Qty     Rate      Amount\n" +
+		"Consulting services           8    100.00     800.00\n\nTotal: 1,250.00\n\n" +
+		"Payment is due within 14 days of the invoice date.\n"
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errw, code := run(t, "--vault", vault, "ingest", "--propose-only", "--json", src)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	proposals, _ := obj["proposals"].([]any)
+	if len(proposals) != 1 {
+		t.Fatalf("got %d proposals, want 1: %s", len(proposals), out)
+	}
+	p := proposals[0].(map[string]any)
+	if engine, _ := p["ocr_engine"].(string); engine != "plaintext" {
+		t.Errorf("ocr_engine = %q, want plaintext: %s", engine, out)
+	}
+	if doctype, _ := p["doctype"].(string); doctype != "invoice" {
+		t.Errorf("doctype = %q, want invoice (the text was read, so rules can classify it)", doctype)
+	}
+	if skip, _ := p["skip"].(bool); skip {
+		t.Errorf("a readable plain-text invoice was skipped: %s", out)
 	}
 }
 

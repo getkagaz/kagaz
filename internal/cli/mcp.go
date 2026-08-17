@@ -388,10 +388,11 @@ func newMCPCommand(rt *Runtime) *cobra.Command {
 				Version: rt.Version,
 				Tools:   mcpToolSet(rt),
 				In:      rt.In,
-				// Not rt.Out: the protocol stream is the only thing that may
-				// ever be written to stdout, and rt.Out is where human text
-				// goes. They happen to be the same file descriptor, which is
-				// exactly why nothing else in this command prints.
+				// rt.Out is stdout, and while this command is serving, the
+				// JSON-RPC stream is the ONLY thing that may be written there
+				// -- one stray human-readable line corrupts the protocol. That
+				// is why nothing else in this branch prints, and why every
+				// diagnostic below goes to rt.Err.
 				Out: rt.Out,
 				Log: rt.Err,
 			}

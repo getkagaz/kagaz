@@ -80,6 +80,11 @@ func (p *Pipeline) Execute(proposals []Proposal) (*Result, error) {
 			return res, fmt.Errorf("ingest: %s: %w", filepath.Base(prop.Source), err)
 		}
 		prop.Tags = p.recheckTags(&prop)
+		// The outcome is recomputed here, not trusted from Analyze: a caller
+		// may have edited Tags in between, and the preview's promise is only
+		// worth anything if the set written below is the set derived from what
+		// the user approved.
+		prop.TagsAfter, prop.DroppedTags = p.resultingTags(prop.TagsBefore, prop.Tags, prop.DroppedTags)
 		ops = append(ops, move.Op{Src: prop.Source, Dst: prop.Dest})
 		acting = append(acting, prop)
 	}
@@ -228,15 +233,26 @@ func (p *Pipeline) writeSidecar(prop Proposal) error {
 	return sidecar.Write(prop.Dest, meta)
 }
 
-// applyTags sets the proposal's (already vocabulary-checked) tags on the filed
-// document. A filesystem without extended attributes is reported as a warning
-// by the caller, never as a failure: Linux CI and many network mounts are in
-// that state and the document is filed correctly regardless.
+// applyTags sets the filed document's tags to exactly Proposal.TagsAfter -- the
+// set the preview showed -- rather than adding Proposal.Tags to whatever the
+// copy inherited.
+//
+// This is the whole fix for a defect worth restating: move.CopyFile carries the
+// source's extended attributes, so tags.Add here used to *union* Kagaz's
+// contribution with an inherited set the user was never shown. A user approved
+// "active, fy2025" and got "active, alex-rao, confidential, fy2025, tax" --
+// including a tag that decides whether `resolve --for-send` gates the document,
+// and one the vault's own lint rejects. Writing the exact set makes the preview
+// a statement about the outcome instead of about Kagaz's delta.
+//
+// A filesystem without extended attributes is reported as a warning by the
+// caller, never as a failure: Linux CI and many network mounts are in that
+// state and the document is filed correctly regardless.
 func (p *Pipeline) applyTags(prop Proposal) error {
-	if len(prop.Tags) == 0 {
+	if len(prop.TagsAfter) == 0 && len(prop.TagsBefore) == 0 {
 		return nil
 	}
-	if err := tags.Add(prop.Dest, prop.Tags...); err != nil {
+	if err := tags.Write(prop.Dest, prop.TagsAfter); err != nil {
 		if errors.Is(err, tags.ErrUnsupported) {
 			return fmt.Errorf("%w (Finder tags are unavailable on this filesystem)", err)
 		}

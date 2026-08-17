@@ -6,7 +6,10 @@
 # The `url`/`sha256` below name the tarball that the *first* tagged release
 # will produce; `release.yml` rewrites both, adds the `bottle do` block and
 # pushes the result to the getkagaz/homebrew-kagaz tap. Until that release
-# exists, only `brew install --HEAD kagaz` can succeed.
+# exists this formula is NOT installable in any form: the tarball it names
+# does not exist, the sha256 is a placeholder, and the tap is empty, so
+# `brew install --HEAD` has no formula to find either. Build from source
+# instead — see docs/installation.md.
 #
 # Toolchain note: this formula deliberately does NOT `depends_on xcode: :build`.
 # `machelper/` has no package dependencies and no macro plugin — guided

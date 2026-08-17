@@ -14,11 +14,14 @@
 //  2. Model output is never trusted. A returned doctype must exist in the
 //     resolved catalog, and the category always comes from the catalog, never
 //     from the model.
-//  3. Every model tier can decline. The catalog is offered to the model with
-//     doctypes.Unclassified appended, and the prompt tells it to prefer that
-//     over a near miss. A model that cannot say "none of these" does not stop
-//     giving wrong answers -- it stops being able to give a right one, and
-//     reports the same high confidence either way.
+//  3. Every model tier can decline. All three -- Apple Foundation Models and
+//     MLX through the Swift helpers, and Ollama here -- offer the model the
+//     catalog with doctypes.Unclassified appended, and tell it in the prompt to
+//     prefer that over a near miss. A model that cannot say "none of these"
+//     does not stop giving wrong answers -- it stops being able to give a right
+//     one, and reports the same high confidence either way. The two Swift
+//     packages are independent by design, so this lives in each:
+//     DocTypeCatalog.choices in machelper and machelper-mlx alike.
 //  4. Graceful degradation, never a hard failure. A missing, broken, slow or
 //     lying backend degrades to rules, and an unconfident rules answer degrades
 //     to doctypes.Unclassified with zero confidence. Ingest is never failed by

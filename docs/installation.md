@@ -14,16 +14,32 @@ title: Installation
   Apple Vision OCR tier and the offline rules classifier, which is a fully
   functional vault manager on its own.
 
-## Homebrew
+## Today: build from source. Homebrew does not work yet.
+
+No release has been tagged, and `getkagaz/homebrew-kagaz` — the tap — is
+populated only by the release workflow, so it is empty. Every Homebrew form
+of the install therefore fails today:
+
+- `brew tap getkagaz/kagaz && brew install kagaz` → *No available formula*.
+- `brew install --HEAD getkagaz/kagaz/kagaz` → same, because `--HEAD`
+  changes which source a formula builds, not where the formula comes from.
+- Installing `Formula/kagaz.rb` from this repo directly → its `url` points
+  at a `v0.1.0` tag that does not exist and its `sha256` is a placeholder
+  that `release.yml` rewrites at tag time.
+
+Skip to [Building from source](#building-from-source-the-path-that-works-today).
+Everything below about Homebrew describes the intended path **after** the
+first tagged release.
+
+## Homebrew (not available yet)
 
 ```
-brew tap getkagaz/kagaz
-brew install kagaz
+brew tap getkagaz/kagaz   # not yet available
+brew install kagaz        # not yet available
 ```
 
-**What this needs depends on whether you're installing a bottle or building
-from source — and today, that means building from source, because no
-release has been tagged yet and no bottle has ever been published.**
+**What this will need depends on whether you're installing a bottle or
+building from source.**
 
 ### Bottled install (the normal path, once releases exist)
 
@@ -34,12 +50,10 @@ Go. The only runtime dependency Homebrew pulls in is `poppler` (for
 `pdftotext`), itself bottled. This is the intended everyday experience for
 a Kagaz user.
 
-### Source build (today's actual path, and `--build-from-source` always)
+### Homebrew source build (`--build-from-source`, once the tap exists)
 
-**No release has been tagged yet, so no bottles exist yet.** Until the
-first tagged release publishes bottles, `brew install kagaz` — or any
-explicit `brew install --build-from-source kagaz` afterwards — builds
-everything locally, and that build needs:
+An explicit `brew install --build-from-source kagaz` builds everything
+locally, and that build needs:
 
 - **Xcode's Command Line Tools** (`xcode-select --install`) — full Xcode is
   **not** required. `kagaz-machelper`'s Apple Foundation Models
@@ -55,14 +69,14 @@ everything locally, and that build needs:
 - **Go**, to build the CLI and MCP server. The formula declares
   `depends_on "go" => :build`.
 
-So: if you `brew install kagaz` today, `xcode-select -p` pointing at
+So: for a Homebrew source build, `xcode-select -p` pointing at
 `CommandLineTools` (the common case) is already sufficient — Homebrew
 installs Go for you as a build dependency automatically.
 
 ### `kagaz-mlx` (separate, opt-in formula — and it genuinely needs Xcode)
 
 ```
-brew install getkagaz/kagaz/kagaz-mlx
+brew install getkagaz/kagaz/kagaz-mlx   # not yet available
 ```
 
 Builds the MLX classifier tier (`machelper-mlx/`). Kept as its own formula,
@@ -114,7 +128,7 @@ Signing, notarization and cask packaging for the menu-bar app additionally
 need an Apple Developer account, tracked as a remaining human-gated step
 (see [HOMEBREW_CORE.md](HOMEBREW_CORE.md)).
 
-## Building from source directly (bypassing Homebrew)
+## Building from source (the path that works today)
 
 ```
 git clone https://github.com/getkagaz/kagaz
@@ -122,6 +136,10 @@ cd kagaz
 go build -o kagaz ./cmd/kagaz
 go build -o kagaz-mcp ./cmd/kagaz-mcp
 ```
+
+Copy the two binaries somewhere on your `PATH`. `kagaz` alone is a working
+vault manager; the Swift helper and `poppler` (`brew install poppler`) each
+add an optional tier, and `kagaz doctor` reports which ones it can see.
 
 The Swift helper needs a separate build. Command Line Tools alone is enough
 — `machelper` needs no macro plugin and no full Xcode install, for the

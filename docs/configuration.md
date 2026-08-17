@@ -116,15 +116,20 @@ an error naming the fix (e.g. `run kagaz model pull --engine mlx`) — except
 that a *runtime* classifier failure, or a result under `min_confidence`,
 always falls back to `rules` rather than failing the whole `ingest`.
 
-## `encrypted_docs`
+## `encrypted_docs` — **not implemented**
 
-| Field | Default | Meaning |
+**Nothing reads these settings yet.** They are parsed and validated so that
+a `vault.yaml` written today stays valid, but Kagaz has no
+encrypted-document handling: setting them changes no behaviour whatsoever.
+
+| Field | Default | Meaning (planned) |
 |---|---|---|
 | `keep_encrypted` | `false` | Leave password-protected documents encrypted in place. |
-| `password_store` | `"keychain"` | Only `"keychain"` is implemented. |
+| `password_store` | `"keychain"` | Where a document's password would be looked up. `"keychain"` is the only value the schema accepts, and no store is implemented. |
 
-Passwords never appear anywhere in the vault — not in a filename, sidecar,
-`INDEX.md`, manifest, or log. Only the Keychain **item name** is recorded.
+The design rule, for when it is built: passwords never appear anywhere in
+the vault — not in a filename, sidecar, `INDEX.md`, manifest, or log. Only
+the Keychain **item name** would be recorded.
 
 ## `lint`
 

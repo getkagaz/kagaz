@@ -87,6 +87,13 @@ func HelperPath() (string, bool) {
 // ...) that callers switch on to decide how to degrade. Code and Message are
 // empty when the output could not be decoded as a contract payload.
 type HelperFailure struct {
+	// Binary names the helper that failed, so the message tells the user which
+	// one to fix. Empty means HelperBinary: the default helper is by far the
+	// common case, and an empty field must not render as a blank prefix. The
+	// MLX tier sets it to kagaz-machelper-mlx -- it is the tier most likely to
+	// fail, and naming the wrong binary there sends the user to fix a helper
+	// that is working.
+	Binary string
 	// Code is the contract's "error" value, e.g. "unsupported_format".
 	Code string
 	// Message is the contract's human-readable "message" value.
@@ -100,15 +107,19 @@ type HelperFailure struct {
 // Error renders the code and message when the helper supplied them, and falls
 // back to the exit status plus stderr otherwise.
 func (e *HelperFailure) Error() string {
+	binary := e.Binary
+	if binary == "" {
+		binary = HelperBinary
+	}
 	switch {
 	case e.Code != "" && e.Message != "":
-		return fmt.Sprintf("%s: %s: %s", HelperBinary, e.Code, e.Message)
+		return fmt.Sprintf("%s: %s: %s", binary, e.Code, e.Message)
 	case e.Code != "":
-		return fmt.Sprintf("%s: %s", HelperBinary, e.Code)
+		return fmt.Sprintf("%s: %s", binary, e.Code)
 	case e.Message != "":
-		return fmt.Sprintf("%s: %v: %s", HelperBinary, e.Err, e.Message)
+		return fmt.Sprintf("%s: %v: %s", binary, e.Err, e.Message)
 	default:
-		return fmt.Sprintf("%s: %v", HelperBinary, e.Err)
+		return fmt.Sprintf("%s: %v", binary, e.Err)
 	}
 }
 

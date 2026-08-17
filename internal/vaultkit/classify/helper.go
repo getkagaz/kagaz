@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -95,13 +96,14 @@ func execHelper(ctx context.Context, path string, args []string, stdin string) (
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return stdout.Bytes(), &ocr.HelperFailure{
+			Binary:  filepath.Base(path),
 			Code:    CodeTimeout,
 			Message: "helper did not answer within its time budget",
 			Stdout:  stdout.Bytes(),
 			Err:     ctxErr,
 		}
 	}
-	return stdout.Bytes(), helperFailure(err, stdout.Bytes(), stderr.String())
+	return stdout.Bytes(), helperFailure(filepath.Base(path), err, stdout.Bytes(), stderr.String())
 }
 
 // boundedBuffer is an io.Writer that keeps at most limit bytes and silently
@@ -153,10 +155,11 @@ type helperResponse struct {
 // helperFailure turns a non-zero helper exit into an *ocr.HelperFailure,
 // preferring the structured error on stdout over the raw exit status, so
 // callers can switch on Code rather than parse a sentence.
-func helperFailure(runErr error, stdout []byte, stderr string) error {
+func helperFailure(binary string, runErr error, stdout []byte, stderr string) error {
 	var resp helperResponse
 	if err := json.Unmarshal(bytes.TrimSpace(stdout), &resp); err == nil && resp.Error != "" {
 		return &ocr.HelperFailure{
+			Binary:  binary,
 			Code:    resp.Error,
 			Message: resp.Message,
 			Stdout:  stdout,
@@ -164,6 +167,7 @@ func helperFailure(runErr error, stdout []byte, stderr string) error {
 		}
 	}
 	return &ocr.HelperFailure{
+		Binary:  binary,
 		Message: firstLine(strings.TrimSpace(stderr)),
 		Stdout:  stdout,
 		Err:     runErr,
@@ -175,13 +179,17 @@ func helperFailure(runErr error, stdout []byte, stderr string) error {
 // doctype -- returns an *ocr.HelperFailure carrying a Code, and every one of
 // those degrades to rules in the Chain rather than failing ingest.
 //
-// engine is the engine string to stamp on the result; the helper's own
+// binary names the helper for error messages -- the MLX tier and the default
+// tier are different binaries, and an error naming the wrong one sends the
+// user to fix a helper that is working. engine is the engine string to stamp
+// on the result; the helper's own
 // "engine" field is informational only, since the caller knows which binary and
 // model it invoked and the helper does not get to rename itself.
-func decodeClassifyResponse(engine string, data []byte) (Result, error) {
+func decodeClassifyResponse(binary, engine string, data []byte) (Result, error) {
 	var resp helperResponse
 	if err := json.Unmarshal(bytes.TrimSpace(data), &resp); err != nil {
 		return Result{}, &ocr.HelperFailure{
+			Binary:  binary,
 			Code:    CodeBadResponse,
 			Message: "decoding response: " + err.Error(),
 			Stdout:  data,
@@ -189,11 +197,12 @@ func decodeClassifyResponse(engine string, data []byte) (Result, error) {
 		}
 	}
 	if resp.Error != "" {
-		return Result{}, &ocr.HelperFailure{Code: resp.Error, Message: resp.Message, Stdout: data}
+		return Result{}, &ocr.HelperFailure{Binary: binary, Code: resp.Error, Message: resp.Message, Stdout: data}
 	}
 	if resp.Contract != Contract {
 		return Result{}, &ocr.HelperFailure{
-			Code: CodeUnsupportedContract,
+			Binary: binary,
+			Code:   CodeUnsupportedContract,
 			Message: "helper speaks contract " + strconv.Itoa(resp.Contract) + ", this build speaks " + strconv.Itoa(Contract) +
 				"; upgrade kagaz or the helper so they match",
 			Stdout: data,
@@ -201,6 +210,7 @@ func decodeClassifyResponse(engine string, data []byte) (Result, error) {
 	}
 	if strings.TrimSpace(resp.DocType) == "" {
 		return Result{}, &ocr.HelperFailure{
+			Binary:  binary,
 			Code:    CodeBadResponse,
 			Message: "response carried no doctype",
 			Stdout:  data,

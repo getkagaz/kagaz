@@ -67,9 +67,20 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 		cause := p.SkipReason
 		ext := strings.ToLower(filepath.Ext(p.Source))
 		if noTextExtracted(p) {
-			cause = fmt.Sprintf("no text extractor for %s on this machine, so there was nothing to classify", ext)
-			if ext == "" {
-				cause = "no text extractor for this file type on this machine, so there was nothing to classify"
+			// Name the format, not the machine. "no text extractor on this
+			// machine" reads as a missing tool the user could install, which
+			// for a format Kagaz simply does not read is advice that can never
+			// come true. Kagaz reads PDFs, images and plain text; anything
+			// else is out of scope by design, not by configuration.
+			switch {
+			case ext == "":
+				cause = "Kagaz does not read files without an extension (it reads PDFs, images and plain text), so there was nothing to classify"
+			case readableExt(ext):
+				// A format Kagaz does understand, so this really is a missing
+				// tool or an unreadable file, and `kagaz doctor` can help.
+				cause = fmt.Sprintf("no text could be extracted from this %s (run kagaz doctor to see which extraction tiers are available), so there was nothing to classify", ext)
+			default:
+				cause = fmt.Sprintf("Kagaz does not read %s files (it reads PDFs, images and plain text), so there was nothing to classify", ext)
 			}
 		}
 		out = append(out, Guidance{
@@ -80,6 +91,22 @@ func guidanceFor(proposals []ingest.Proposal) []Guidance {
 		})
 	}
 	return out
+}
+
+// readableExt reports whether ext names a format Kagaz has an extraction tier
+// for, so guidance can tell "we don't read this" apart from "we read this and
+// got nothing". ext is lowercased and includes the dot.
+func readableExt(ext string) bool {
+	for _, known := range ocr.PlainTextExtensions {
+		if ext == known {
+			return true
+		}
+	}
+	switch ext {
+	case ".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".heif", ".gif", ".bmp", ".webp":
+		return true
+	}
+	return false
 }
 
 // noTextExtracted reports whether extraction produced nothing for this file.

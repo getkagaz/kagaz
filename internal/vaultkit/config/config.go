@@ -118,6 +118,11 @@ type Classify struct {
 }
 
 // Encrypted controls handling of password-protected documents.
+//
+// NOT IMPLEMENTED. Both fields are parsed and validated -- so a vault.yaml
+// written today stays valid -- but nothing consumes them: Kagaz has no
+// encrypted-document handling, and internal/vaultkit/keychain, its intended
+// home, is imported by nothing. Do not document either field as working.
 type Encrypted struct {
 	// KeepEncrypted is a tri-state: nil means the key was absent from
 	// vault.yaml, which is distinct from an explicit false. The safe default

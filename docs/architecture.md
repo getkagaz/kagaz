@@ -60,9 +60,10 @@ All mutating and reasoning logic lives under `internal/vaultkit/`:
 - **`classify`** — the tiered classifier chain (`auto|apple|mlx|ollama|rules`)
   behind one interface; validates every result against the resolved catalog
   before it's trusted (Global Constraint 8).
-- **`ocr`** — text extraction: `pdftotext` (fast path for text-layer PDFs),
-  Apple Vision via `kagaz-machelper` (scanned images/PDFs), and an opt-in
-  local Ollama vision model, in that preference order.
+- **`ocr`** — text extraction: plain text read directly (`.txt`, `.md`, no
+  tooling at all), `pdftotext` (fast path for text-layer PDFs), Apple
+  Vision via `kagaz-machelper` (scanned images/PDFs), and an opt-in local
+  Ollama vision model, in that preference order.
 - **`tags`** — reads and writes Finder tags (the `com.apple.metadata:_kMDItemUserTags`
   extended attribute) and enforces the controlled vocabulary.
 - **`sidecar`** — reads/writes the `.<file>.meta.yaml` companion files.
@@ -71,8 +72,10 @@ All mutating and reasoning logic lives under `internal/vaultkit/`:
   delete it). `Rollback` reverses a manifest.
 - **`audit`** — the append-only JSONL log every mutation and confidential
   resolution writes to.
-- **`keychain`** — records *which* Keychain item unlocks an encrypted
-  document; never touches a password value.
+- **`keychain`** — **not wired up yet.** It is the intended home for
+  recording *which* Keychain item unlocks an encrypted document (never the
+  password value), but nothing imports it today and Kagaz has no
+  encrypted-document handling at all.
 - **`ingest`** — OCR → classify → extract → propose → (on approval) execute,
   the pipeline behind `kagaz ingest`.
 - **`search`** — the walk-and-filter engine behind `kagaz find`, with an

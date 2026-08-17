@@ -36,8 +36,15 @@ func (p Proposal) Preview() string {
 	fmt.Fprintf(&b, "   year  %d\n", p.Year)
 	fmt.Fprintf(&b, "   ident %s\n", p.Identifier)
 
-	if len(p.Tags) > 0 {
-		fmt.Fprintf(&b, "   tags  %s\n", strings.Join(p.Tags, ", "))
+	// The RESULTING tag set, never Kagaz's delta. A move copies the source's
+	// extended attributes, so a document arrives with tags Kagaz did not
+	// propose; showing only the delta made the user approve one tag set and
+	// receive another. When the source was already tagged, both sides are shown
+	// in the same "before -> after" shape `kagaz tag --propose-only` uses.
+	if len(p.TagsBefore) > 0 {
+		fmt.Fprintf(&b, "   tags  %s -> %s\n", joinTags(p.TagsBefore), joinTags(p.TagsAfter))
+	} else if len(p.TagsAfter) > 0 {
+		fmt.Fprintf(&b, "   tags  %s\n", joinTags(p.TagsAfter))
 	}
 	for _, d := range p.DroppedTags {
 		fmt.Fprintf(&b, "   tag?  %s not applied: %s\n", d.Tag, d.Reason)
@@ -52,6 +59,15 @@ func (p Proposal) Preview() string {
 		fmt.Fprintf(&b, "   warn  %s\n", w)
 	}
 	return b.String()
+}
+
+// joinTags renders a tag set, naming the empty set rather than printing
+// nothing: "before -> after" with a blank half reads as a rendering bug.
+func joinTags(list []string) string {
+	if len(list) == 0 {
+		return "(none)"
+	}
+	return strings.Join(list, ", ")
 }
 
 // Explain returns one sentence per inferred value, in a stable order, saying

@@ -121,7 +121,6 @@ func newResolveCommand(rt *Runtime) *cobra.Command {
 			if !approved {
 				entry.Detail["outcome"] = "not confirmed"
 			}
-			var warnings []string
 			// The audit line is written before the path is handed over, and on
 			// the refusal path too. There is no mode that skips it.
 			if err := log.Append(entry); err != nil {
@@ -131,12 +130,11 @@ func newResolveCommand(rt *Runtime) *cobra.Command {
 			if !approved {
 				payload.Message = "re-run with --confirm to resolve this document for external send"
 				return rt.Emit(&Response{
-					Command:  "resolve",
-					Status:   StatusConfirmationRequired,
-					Payload:  payload,
-					Human:    humanResolve,
-					Warnings: warnings,
-					Exit:     ExitConfirmationRequired,
+					Command: "resolve",
+					Status:  StatusConfirmationRequired,
+					Payload: payload,
+					Human:   humanResolve,
+					Exit:    ExitConfirmationRequired,
 				})
 			}
 
@@ -148,7 +146,7 @@ func newResolveCommand(rt *Runtime) *cobra.Command {
 			payload.ResolvedPath = doc.Path
 			return rt.Emit(&Response{
 				Command: "resolve", Status: StatusOK, Payload: payload,
-				Warnings: warnings, Human: humanResolve,
+				Human: humanResolve,
 			})
 		},
 	}

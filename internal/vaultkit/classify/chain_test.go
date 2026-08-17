@@ -208,7 +208,7 @@ func TestChainFallbackMatrix(t *testing.T) {
 				return chainWith(cat, config.EngineApple, &Apple{locate: missing})
 			},
 			text:    invoiceText,
-			wantErr: "brew install",
+			wantErr: "swift build --package-path machelper",
 		},
 		{
 			name: "forced apple available but failing falls back to rules",

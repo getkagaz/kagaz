@@ -57,7 +57,7 @@ func (a *Apple) detail() string {
 
 // hint names the fix for a forced-but-unavailable apple engine.
 func (a *Apple) hint() string {
-	return "install the macOS helper (`brew install getkagaz/tap/kagaz-machelper`) and run `kagaz doctor`; Apple Foundation Models also require macOS 26"
+	return "build the macOS helper (`swift build --package-path machelper -c release`), put kagaz-machelper on your PATH, and run `kagaz doctor`; Apple Foundation Models also require macOS 26"
 }
 
 // helperPath resolves kagaz-machelper, reusing ocr's discovery.
@@ -122,5 +122,5 @@ func (a *Apple) Classify(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return decodeClassifyResponse(config.EngineApple, out)
+	return decodeClassifyResponse(ocr.HelperBinary, config.EngineApple, out)
 }

@@ -146,9 +146,21 @@ type Proposal struct {
 
 	// Dest is the proposed absolute destination path. Empty when Skip is set.
 	Dest string `json:"dest,omitempty"`
-	// Tags are the vocabulary-checked tags Execute will apply.
+	// Tags are the vocabulary-checked tags Kagaz itself contributes. They are
+	// this proposal's *delta*, not the outcome -- see TagsAfter, which is what
+	// the preview shows and what the filed document ends up with.
 	Tags []string `json:"tags,omitempty"`
-	// DroppedTags are tags that were proposed and withheld, with the reason.
+	// TagsBefore are the Finder tags already on the source file. move.CopyFile
+	// carries a source's extended attributes to the destination, so these
+	// arrive in the vault whether or not Kagaz proposed them.
+	TagsBefore []string `json:"tags_before,omitempty"`
+	// TagsAfter is the tag set the filed document will actually carry: the
+	// in-vocabulary subset of TagsBefore, merged with Tags. This is the field
+	// to show a user and the field to compare against reality; it mirrors the
+	// {before, after} pair `kagaz tag --propose-only` returns.
+	TagsAfter []string `json:"tags_after,omitempty"`
+	// DroppedTags are tags that were proposed or inherited and withheld, with
+	// the reason.
 	DroppedTags []DroppedTag `json:"dropped_tags,omitempty"`
 
 	// Why explains every inferred value.
@@ -354,7 +366,15 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error
 		// No text is not fatal: the classifier still sees the filename-derived
 		// nothing and answers unclassified, and the user gets a proposal that
 		// says exactly why it could not be filed.
-		prop.Warnings = append(prop.Warnings, fmt.Sprintf("no text extracted: %v", err))
+		//
+		// The prefix is skipped when the error already says it: a bare
+		// ocr.ErrNoText rendered as "no text extracted: no text extracted",
+		// which reads like two different problems.
+		if msg := err.Error(); strings.Contains(msg, ocr.ErrNoText.Error()) {
+			prop.Warnings = append(prop.Warnings, msg)
+		} else {
+			prop.Warnings = append(prop.Warnings, fmt.Sprintf("no text extracted: %v", msg))
+		}
 	}
 	prop.Text = res.Text
 
@@ -415,7 +435,75 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string) (Proposal, error
 	}
 
 	prop.Tags, prop.DroppedTags = p.proposeTags(prop)
+	prop.TagsBefore = p.readSourceTags(path)
+	prop.TagsAfter, prop.DroppedTags = p.resultingTags(prop.TagsBefore, prop.Tags, prop.DroppedTags)
 	return prop, nil
+}
+
+// readSourceTags reads the Finder tags already on a source file.
+//
+// They matter because a move copies them: move.CopyFile carries the source's
+// extended attributes to the destination, so an ingested document arrives
+// wearing whatever the user (or another tool) had tagged it with, before Kagaz
+// adds anything. A filesystem without xattr support simply has none.
+func (p *Pipeline) readSourceTags(path string) []string {
+	existing, err := tags.Read(path)
+	if err != nil {
+		return nil
+	}
+	return tags.Normalize(existing)
+}
+
+// resultingTags computes the tag set a filed document will really carry, and
+// explains every inherited tag that did not make it.
+//
+// Inherited tags outside the vault's controlled vocabulary are DROPPED rather
+// than carried. Three reasons, in order of weight:
+//
+//   - The preview must be able to promise something. An out-of-vocabulary tag
+//     carried into the vault makes the freshly ingested document fail the
+//     vault's own `kagaz lint` immediately, which is a defect the user did not
+//     ask for and cannot see coming.
+//   - It is the same rule ingest already applies to the tags it proposes
+//     itself (proposeTags). A tag being inherited rather than inferred is not
+//     a reason to hold it to a weaker standard.
+//   - Nothing is lost. A move retires the source into the vault's staging
+//     folder with its extended attributes intact, so the original tagging
+//     survives until the user empties staging.
+//
+// In-vocabulary inherited tags ARE carried, and are shown. That deliberately
+// includes "confidential", which changes whether `resolve --for-send` gates
+// the document: silently dropping it would weaken a document's security
+// posture just as surely as silently adding it would misstate it. The rule is
+// that the user sees the true outcome and approves it -- not that Kagaz picks
+// the safer-looking answer on their behalf.
+func (p *Pipeline) resultingTags(before, added []string, dropped []DroppedTag) ([]string, []DroppedTag) {
+	seen := map[string]bool{}
+	after := make([]string, 0, len(before)+len(added))
+	for _, tag := range before {
+		if seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		if p.Vocab != nil && !p.Vocab.Known(tag) {
+			dropped = append(dropped, DroppedTag{
+				Tag: tag,
+				Reason: "already on the source file, but it is not in the vault's tag vocabulary; " +
+					"it is not carried into the vault (the source keeps it in staging). Add it to vault.yaml to keep it",
+			})
+			continue
+		}
+		after = append(after, tag)
+	}
+	for _, tag := range added {
+		if seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		after = append(after, tag)
+	}
+	sort.Strings(after)
+	return after, dropped
 }
 
 // destination builds the proposed path for doc, and explains the one case a

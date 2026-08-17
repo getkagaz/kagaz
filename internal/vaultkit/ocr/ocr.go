@@ -1,5 +1,6 @@
 // Package ocr turns a document into text. It prefers the cheapest source that
-// works: an existing PDF text layer via poppler's pdftotext (milliseconds),
+// works: a plain-text file read directly (no tooling at all), an existing PDF
+// text layer via poppler's pdftotext (milliseconds),
 // then Apple's Vision framework through kagaz-machelper (~1s/page, no model
 // weights), and only on request a local Ollama vision model.
 //
@@ -22,7 +23,7 @@ import (
 // Result is extracted text plus its provenance.
 type Result struct {
 	Text       string
-	Engine     string // "pdftotext" | "vision" | "ollama:<model>" | "none"
+	Engine     string // "plaintext" | "pdftotext" | "vision" | "ollama:<model>" | "none"
 	Confidence float64
 	Pages      int
 }
@@ -42,6 +43,7 @@ type Extractor struct {
 	cfg    *config.Config
 	engine string // "" = auto; otherwise force "pdftotext" | "vision" | "ollama"
 
+	Text   *PlainText
 	PDF    *PDFToText
 	Vision *Vision
 	Ollama *Ollama
@@ -53,6 +55,7 @@ func NewExtractor(cfg *config.Config, engine string) *Extractor {
 	return &Extractor{
 		cfg:    cfg,
 		engine: engine,
+		Text:   &PlainText{},
 		PDF:    &PDFToText{},
 		Vision: &Vision{Languages: cfg.OCR.VisionLanguages},
 		Ollama: &Ollama{
@@ -67,6 +70,8 @@ func NewExtractor(cfg *config.Config, engine string) *Extractor {
 // one was forced.
 func (e *Extractor) Extract(ctx context.Context, path string) (Result, error) {
 	switch e.engine {
+	case "plaintext":
+		return e.Text.Extract(ctx, path)
 	case "pdftotext":
 		return e.PDF.Extract(ctx, path)
 	case "vision":
@@ -77,6 +82,14 @@ func (e *Extractor) Extract(ctx context.Context, path string) (Result, error) {
 
 	ext := strings.ToLower(filepath.Ext(path))
 	var firstErr error
+
+	// A text file is its own text layer. This runs first and returns
+	// unconditionally for the extensions it claims: there is no OCR tier that
+	// could do better on a .txt, and falling through to Vision would burn a
+	// second per page to read back what os.ReadFile already had.
+	if e.Text.Handles(path) {
+		return e.Text.Extract(ctx, path)
+	}
 
 	if ext == ".pdf" && e.PDF.Available() {
 		res, err := e.PDF.Extract(ctx, path)
@@ -183,6 +196,7 @@ func HasUsableTextLayer(text string, pages int) bool {
 // Describe reports which backends are usable, for `kagaz doctor`.
 func (e *Extractor) Describe() []Status {
 	return []Status{
+		{Name: e.Text.Name(), Available: e.Text.Available(), Detail: e.Text.detail()},
 		{Name: e.PDF.Name(), Available: e.PDF.Available(), Detail: e.PDF.detail()},
 		{Name: e.Vision.Name(), Available: e.Vision.Available(), Detail: e.Vision.detail()},
 		{Name: e.Ollama.Name(), Available: e.Ollama.Available(), Detail: e.Ollama.detail()},

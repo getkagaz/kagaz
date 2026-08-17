@@ -177,7 +177,46 @@ func fieldCoercion() throws {
     #expect(result.fields["nested"] == nil)
 }
 
+@Test("the model may decline, and a decline is a success not a failure")
+func modelMayDecline() throws {
+    let result = try MLXClassifier.decode(
+        output: #"{"doctype": "unclassified", "confidence": 0.0, "fields": {"issuer": "ACME"}}"#,
+        catalog: catalog,
+        repo: "test"
+    )
+    #expect(result.doctype == "unclassified")
+    // Empty category and zero confidence is what the Go core reads as a
+    // decline; "unclassified" is not in the catalog and so has no category.
+    #expect(result.category == "")
+    #expect(result.confidence == 0)
+    // Facts pulled from a document of unknown kind are the least trustworthy
+    // output this helper can produce, so they are dropped.
+    #expect(result.fields.isEmpty)
+}
+
+@Test("a decline is recognised whatever case the model answers in")
+func declineIsCaseInsensitive() throws {
+    for answer in ["Unclassified", "UNCLASSIFIED", "unclassified"] {
+        let result = try MLXClassifier.decode(
+            output: #"{"doctype": "\#(answer)", "confidence": 0.9}"#,
+            catalog: catalog,
+            repo: "test"
+        )
+        #expect(result.doctype == "unclassified")
+        #expect(result.confidence == 0)
+    }
+}
+
 // MARK: - DocTypeCatalog
+
+@Test("the escape hatch is offered to the model, exactly once, and last")
+func choicesAppendTheEscapeHatch() throws {
+    #expect(catalog.choices == ["invoice", "passport", "lease", "unclassified"])
+    // A catalog that already names it must not be given it twice.
+    let withHatch = try DocTypeCatalog(spec: "invoice:financial,unclassified:other")
+    #expect(withHatch.choices == ["invoice", "unclassified"])
+}
+
 
 @Test("a spec entry with two colons is rejected rather than silently accepted")
 func catalogRejectsExtraColon() {

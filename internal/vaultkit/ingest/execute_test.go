@@ -12,6 +12,7 @@ import (
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/move"
 	"github.com/getkagaz/kagaz/internal/vaultkit/sidecar"
+	"github.com/getkagaz/kagaz/internal/vaultkit/tags"
 )
 
 func TestExecuteFilesTheBatchUnderOneManifest(t *testing.T) {
@@ -447,6 +448,84 @@ func TestExecuteRechecksTagsAgainstTheVocabulary(t *testing.T) {
 			t.Errorf("%s: the rejected tag was discarded silently instead of reported: %+v",
 				filepath.Base(prop.Dest), prop.DroppedTags)
 		}
+	}
+}
+
+// TestIngestAppliesExactlyTheTagSetThePreviewShowed pins the fix for a defect
+// where approving a proposal produced a different tag set than the one shown.
+//
+// move.CopyFile carries the source's extended attributes to the destination,
+// and applyTags used to *add* Kagaz's tags to that inherited set. A proposal
+// previewing "active, fy2025" filed a document tagged
+// "active, alex-rao, confidential, fy2025, tax" -- silently including
+// "confidential", which decides whether `resolve --for-send` gates the
+// document, and "tax", which the vault's own lint rejects.
+//
+// The invariant, in one line: what the preview prints is what ends up on disk.
+func TestIngestAppliesExactlyTheTagSetThePreviewShowed(t *testing.T) {
+	p, inbox, _ := testPipeline(t, standardSources())
+
+	// Tag one source before it is analysed: one tag the vocabulary knows and
+	// one it does not.
+	tagged := filepath.Join(inbox, "scan 2024-03-02 acme corp invoice.pdf")
+	if err := tags.Write(tagged, []string{"confidential", "not-in-the-vocabulary"}); err != nil {
+		if errors.Is(err, tags.ErrUnsupported) {
+			t.Skip("this filesystem has no extended attributes")
+		}
+		t.Fatal(err)
+	}
+
+	props := analyze(t, p, inbox)
+	var prop Proposal
+	for _, candidate := range props {
+		if candidate.Source == tagged {
+			prop = candidate
+		}
+	}
+	if prop.Source == "" || prop.Skip {
+		t.Skipf("%s was not a live proposal", filepath.Base(tagged))
+	}
+
+	// The preview states the outcome, both halves of it.
+	preview := prop.Preview()
+	if !strings.Contains(preview, "confidential") {
+		t.Errorf("the preview hides an inherited tag that changes the document's security posture:\n%s", preview)
+	}
+	if !strings.Contains(preview, "not-in-the-vocabulary") {
+		t.Errorf("the preview does not account for the inherited out-of-vocabulary tag:\n%s", preview)
+	}
+	for _, want := range prop.TagsAfter {
+		if !strings.Contains(preview, want) {
+			t.Errorf("the preview omits %q from the resulting set:\n%s", want, preview)
+		}
+	}
+
+	res, err := p.Execute([]Proposal{prop})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(res.Filed) != 1 {
+		t.Fatalf("filed %d, want 1 (warnings: %v)", len(res.Filed), res.Warnings)
+	}
+	filed := res.Filed[0]
+
+	got, err := tags.Read(filed.Dest)
+	if err != nil {
+		t.Fatalf("reading the filed document's tags: %v", err)
+	}
+	if strings.Join(got, ",") != strings.Join(filed.TagsAfter, ",") {
+		t.Errorf("filed document carries %v, but the approved proposal said %v", got, filed.TagsAfter)
+	}
+	// The specifics, so a regression names itself.
+	if !contains(got, "confidential") {
+		t.Error("an in-vocabulary inherited tag was dropped; the preview promised it would be carried")
+	}
+	if contains(got, "not-in-the-vocabulary") {
+		t.Error("an out-of-vocabulary tag was carried into the vault; the document now fails kagaz lint")
+	}
+	// Nothing is lost: the staged source keeps what it had.
+	if p.Vocab != nil && p.Vocab.Known("not-in-the-vocabulary") {
+		t.Fatal("test fixture drifted: the vocabulary now knows the tag this test relies on being unknown")
 	}
 }
 

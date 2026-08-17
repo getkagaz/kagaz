@@ -131,7 +131,8 @@ mdfind -onlyin . '(kMDItemTextContent == "*<text>*"cd || kMDItemDisplayName == "
   on-device; the only network call anywhere in Kagaz is an explicit, human-
   run `kagaz model pull`.
 - **Every mutation previews before it commits** and needs explicit approval
-  (`--yes`/`--accept-proposal` on the CLI, or the equivalent MCP argument).
+  (`--yes`/`--accept-proposal` on the CLI). Approval is always a CLI call:
+  no MCP tool mutates, so no MCP argument can execute one either.
   `--propose-only` always exits without mutating.
 - **A document tagged `confidential` cannot be resolved for external send
   without explicit confirmation**, and an audit line is written either way

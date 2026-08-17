@@ -9,6 +9,14 @@ import MLXLMCommon
 /// the permitted doctypes explicitly, and every answer is re-validated against
 /// the catalog before it is emitted. An out-of-catalog answer becomes a
 /// `classify_failed` error, never an invented category (constraint 8).
+///
+/// The permitted list is `DocTypeCatalog.choices`, which appends
+/// `unclassified`, so the model can decline. Without it the model cannot say
+/// "none of these" and returns its nearest miss at the same high confidence it
+/// would report for a genuine match — a forced wrong answer above
+/// `min_confidence`, written to a sidecar as fact. A decline is decoded as a
+/// success with an empty category and zero confidence, which the Go core reads
+/// as "fall back to rules".
 enum MLXClassifier {
 
     /// Longest excerpt sent to the model.
@@ -117,6 +125,23 @@ enum MLXClassifier {
               !raw.isEmpty else {
             throw HelperError(.classifyFailed, "\(repo) returned no doctype")
         }
+
+        // The model declined. That is a successful classification of "I do not
+        // know", not a failure: it is reported with an empty category and zero
+        // confidence, which is what the Go core reads as a decline. Fields are
+        // dropped too — facts pulled from a document whose kind is unknown are
+        // the least trustworthy output this helper can produce.
+        if DocTypeCatalog.isUnclassified(raw) {
+            return ClassifyResponse(
+                contract: contractVersion,
+                engine: "mlx",
+                doctype: DocTypeCatalog.unclassified,
+                category: "",
+                confidence: 0,
+                fields: [:]
+            )
+        }
+
         guard let doctype = catalog.canonical(raw), let category = catalog.category(for: doctype) else {
             throw HelperError(
                 .classifyFailed,
@@ -228,20 +253,37 @@ enum MLXClassifier {
         You classify documents for a personal document vault. All processing is on-device.
 
         Choose exactly one document type from this list, and nothing else:
-        \(catalog.names.joined(separator: ", "))
+        \(catalog.choices.joined(separator: ", "))
 
         Reply with a single JSON object and no other text, in exactly this shape:
         {"doctype": "<one of the list above>", "confidence": <0.0 to 1.0>, "fields": {"<name>": "<value>"}}
 
         Rules:
         - Pick the single best match. Never invent a type that is not in the list.
-        - confidence is your own certainty from 0.0 to 1.0. Use a low value when the
-          text is ambiguous, truncated or unreadable; the caller falls back to rules
-          when confidence is low, so an honest low score is more useful than a guess.
+        - "unclassified" means none of the other types describes this document. Choose
+          it whenever no listed type genuinely fits, and prefer it over a near miss: a
+          near miss files the document in the wrong place, where the mistake is
+          invisible, while "unclassified" simply asks the user. A document is not a
+          contract because it is business writing, not a certificate because it is
+          decorative, and not a receipt because it lists items. If you find yourself
+          stretching a type to fit, the answer is "unclassified".
+        - When the document names its own type in its title or letterhead -- "Tax
+          Invoice", "Statement of Account", "Boarding Pass", "Business Proposal" --
+          that wording is the strongest evidence there is. Match it to the listed
+          type that means the same thing, and do not override it with a type
+          suggested only by a phrase in the body such as "amount due".
+        - Prefer the most specific type that actually fits over a more general one.
+        - confidence is your own certainty from 0.0 to 1.0. Reserve 0.8 and above for a
+          document that plainly announces its own type. Use 0.5 or below when the text
+          is ambiguous, truncated or unreadable, or when two types fit about equally
+          well; the caller falls back to deterministic rules when confidence is low, so
+          an honest low score is more useful than a guess. Report 0.0 with
+          "unclassified".
         - fields holds at most a handful of short facts that are literally present in
           the text, such as amount, issuer, document_number, date or account. Copy
-          values verbatim. Never guess a value, and return an empty object rather
-          than an invented one.
+          values verbatim. Never guess a value, never write a placeholder such as
+          "unknown", "n/a" or "none", and return an empty object rather than an
+          invented one.
         """
     }
 
