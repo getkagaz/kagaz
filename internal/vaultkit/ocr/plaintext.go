@@ -76,11 +76,15 @@ func (p *PlainText) Extract(_ context.Context, path string) (Result, error) {
 		return Result{Engine: "none"}, fmt.Errorf("plaintext: %s: %w (the file is binary, despite its extension)",
 			filepath.Base(path), ErrNoText)
 	}
-	// A truncated read can split a rune; drop the partial tail rather than
-	// calling the whole file invalid.
+	// A truncated read can split a rune at the very end; drop that partial
+	// tail rather than calling the whole file invalid. Only the tail is
+	// forgiven — everything before it must be valid UTF-8, or a NUL-free
+	// binary file that happens to fill the read budget would be laundered
+	// into glyph soup instead of refused.
 	if len(data) == MaxPlainTextBytes {
-		text = strings.ToValidUTF8(text, "")
-	} else if !utf8.ValidString(text) {
+		text = trimPartialTailRune(text)
+	}
+	if !utf8.ValidString(text) {
 		return Result{Engine: "none"}, fmt.Errorf("plaintext: %s: %w (not valid UTF-8)",
 			filepath.Base(path), ErrNoText)
 	}
@@ -89,6 +93,45 @@ func (p *PlainText) Extract(_ context.Context, path string) (Result, error) {
 	}
 
 	return Result{Text: text, Engine: p.Name(), Confidence: 1, Pages: 1}, nil
+}
+
+// trimPartialTailRune drops a trailing byte sequence that is a valid but
+// incomplete prefix of a multi-byte rune — the one kind of damage a truncated
+// read can do to otherwise valid UTF-8.
+//
+// Anything else is left exactly as it is, so that a file which is simply not
+// UTF-8 still fails the validity check that follows.
+func trimPartialTailRune(text string) string {
+	for i := len(text) - 1; i >= 0 && len(text)-i < utf8.UTFMax; i-- {
+		if !utf8.RuneStart(text[i]) {
+			continue
+		}
+		want := runeLen(text[i])
+		if want > len(text)-i {
+			// A lead byte promising more bytes than the read delivered, with
+			// only continuation bytes behind it: a split rune.
+			return text[:i]
+		}
+		return text
+	}
+	return text
+}
+
+// runeLen is the encoded length a UTF-8 lead byte declares, or 0 if b is not a
+// lead byte of a multi-byte sequence.
+func runeLen(b byte) int {
+	switch {
+	case b&0x80 == 0x00:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	default:
+		return 0
+	}
 }
 
 // detail is the doctor line for this runner.

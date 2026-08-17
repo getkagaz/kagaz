@@ -523,10 +523,47 @@ func TestIngestAppliesExactlyTheTagSetThePreviewShowed(t *testing.T) {
 	if contains(got, "not-in-the-vocabulary") {
 		t.Error("an out-of-vocabulary tag was carried into the vault; the document now fails kagaz lint")
 	}
-	// Nothing is lost: the staged source keeps what it had.
 	if p.Vocab != nil && p.Vocab.Known("not-in-the-vocabulary") {
 		t.Fatal("test fixture drifted: the vocabulary now knows the tag this test relies on being unknown")
 	}
+
+	// Nothing is lost: the staged source keeps what it had. This is the only
+	// recovery path a user has for a tag Kagaz declined to carry, so the
+	// dropped tag must still be readable on the staged original.
+	stagedSrc := findStaged(t, p.Cfg.StagingDir(), filepath.Base(tagged))
+	stagedTags, err := tags.Read(stagedSrc)
+	if err != nil {
+		t.Fatalf("reading the staged source's tags: %v", err)
+	}
+	if !contains(stagedTags, "not-in-the-vocabulary") {
+		t.Errorf("the staged source lost the dropped tag (%v); the user has no way to recover it", stagedTags)
+	}
+	if !contains(stagedTags, "confidential") {
+		t.Errorf("the staged source lost a tag it had before filing (%v)", stagedTags)
+	}
+}
+
+// findStaged returns the path of the staged copy of base under dir, which the
+// move engine files beneath a timestamped subdirectory.
+func findStaged(t *testing.T, dir, base string) string {
+	t.Helper()
+	var found string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && d.Name() == base {
+			found = path
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the staging area: %v", err)
+	}
+	if found == "" {
+		t.Fatalf("no staged copy of %q under %s", base, dir)
+	}
+	return found
 }
 
 // TestAnalyzeReportsCancellation: a cancelled batch must say it was cancelled,

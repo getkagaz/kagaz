@@ -20,12 +20,28 @@ No release has been tagged, and `getkagaz/homebrew-kagaz` — the tap — is
 populated only by the release workflow, so it is empty. Every Homebrew form
 of the install therefore fails today:
 
-- `brew tap getkagaz/kagaz && brew install kagaz` → *No available formula*.
-- `brew install --HEAD getkagaz/kagaz/kagaz` → same, because `--HEAD`
-  changes which source a formula builds, not where the formula comes from.
-- Installing `Formula/kagaz.rb` from this repo directly → its `url` points
-  at a `v0.1.0` tag that does not exist and its `sha256` is a placeholder
-  that `release.yml` rewrites at tag time.
+- `brew tap getkagaz/kagaz && brew install kagaz` → *No available formula*:
+  the tap has no formula in it yet.
+- `brew install --HEAD getkagaz/kagaz/kagaz` → the same failure, and for the
+  same reason. `--HEAD` picks which *spec* of a formula to build; it does not
+  supply the formula, so an empty tap still has nothing to select.
+- Installing `Formula/kagaz.rb` from this repo directly → current Homebrew
+  refuses to install a formula file that is not inside a tap, whatever spec
+  you ask for. Verified against Homebrew 6.0.17:
+
+  ```
+  $ brew install --HEAD --dry-run ./Formula/kagaz.rb
+  Error: Homebrew requires formulae to be in a tap, rejecting:
+    ./Formula/kagaz.rb
+  ```
+
+  Note that this rejection happens before any spec is considered. The
+  formula *does* declare `head "https://github.com/getkagaz/kagaz.git"`, so
+  the `--HEAD` route is blocked by Homebrew's tap requirement rather than by
+  the placeholder `url`/`sha256` — but blocked either way. Copying the
+  formula into a tap of your own would reach the `head` spec; that is a
+  longer road than just building from source, which is what the `head` spec
+  would do anyway.
 
 Skip to [Building from source](#building-from-source-the-path-that-works-today).
 Everything below about Homebrew describes the intended path **after** the
