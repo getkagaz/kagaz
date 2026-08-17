@@ -22,7 +22,13 @@ const SchemaVersion = 1
 
 // Config is a fully parsed, defaulted and validated vault.yaml.
 type Config struct {
-	Version    int          `yaml:"version"`
+	Version int `yaml:"version"`
+	// Name is an optional human label for this vault, e.g. "Personal & Family
+	// KYC". It is display-only: it names the vault in INDEX.md, AGENTS.md and
+	// `kagaz doctor`, and it never contributes to a path, a folder name, a
+	// filename, a manifest path or a staging path. Read it through DisplayName,
+	// which falls back to the vault_root folder name when it is unset.
+	Name       string       `yaml:"name,omitempty"`
 	VaultRoot  string       `yaml:"vault_root"`
 	FiscalYear FiscalYear   `yaml:"fiscal_year"`
 	People     []Person     `yaml:"people"`
@@ -306,6 +312,14 @@ func (c *Config) applyDefaults() {
 	if c.Version == 0 {
 		c.Version = SchemaVersion
 	}
+	// Name is deliberately *not* defaulted to the vault_root folder name here.
+	// Defaulting it would put a value into the in-memory Config that the user
+	// never wrote, and anything that ever serialises a Config back would then
+	// silently plant a `name:` in a hand-edited vault.yaml. The fallback lives
+	// in DisplayName instead, where it costs nothing and cannot be written out.
+	// Trimming is not defaulting: it invents no value, it only stops trailing
+	// whitespace from turning into a mis-rendered heading.
+	c.Name = strings.TrimSpace(c.Name)
 	if c.VaultRoot == "" {
 		c.VaultRoot = "~/Documents"
 	}
@@ -483,6 +497,9 @@ func (c *Config) Validate() error {
 	if c.Version > SchemaVersion {
 		return fmt.Errorf("vault.yaml version %d is newer than this build supports (%d); upgrade kagaz", c.Version, SchemaVersion)
 	}
+	if err := ValidateName(c.Name); err != nil {
+		return err
+	}
 	if c.FiscalYear.StartMonth < 1 || c.FiscalYear.StartMonth > 12 {
 		return fmt.Errorf("fiscal_year.start_month must be 1-12, got %d", c.FiscalYear.StartMonth)
 	}
@@ -553,6 +570,66 @@ func (c *Config) Validate() error {
 		}
 		if _, ok := c.Structure[dt.Category]; !ok {
 			return fmt.Errorf("doctypes.%s: category %q is not defined in structure", dt.Name, dt.Category)
+		}
+	}
+	return nil
+}
+
+// MaxNameLen is the longest vault name accepted, in runes. The name is a label
+// rendered into a Markdown heading, a doctor row and (eventually) a GUI list;
+// past this length it stops being a label and starts being a paragraph.
+const MaxNameLen = 80
+
+// DisplayName is the human label for this vault: `name:` when vault.yaml sets
+// one, otherwise the folder name of vault_root. It is the only supported way to
+// read the name, and it is display-only — see the warning on ValidateName.
+//
+// The absolute vault root is never returned: it is specific to one machine, and
+// INDEX.md and AGENTS.md must stay byte-identical across a sync.
+func (c *Config) DisplayName() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	base := filepath.Base(filepath.Clean(c.VaultRoot))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "vault"
+	}
+	return base
+}
+
+// ValidateName reports whether a string is acceptable as a vault `name:`. It is
+// exported so a caller that is about to *write* a vault.yaml (`kagaz init
+// --name`) can reject a bad name before the file exists, rather than writing a
+// file that then fails to load.
+//
+// The name is a human label and nothing else. **No path-building code may ever
+// read Config.Name or DisplayName** — not a destination folder, a filename, a
+// manifest path or a staging path. That structural rule, not this function, is
+// what makes a name safe; the checks here are a second line, cheap enough to be
+// worth having in a tool whose whole job is moving files:
+//
+//   - Path separators and the `..` element are rejected outright, so a name can
+//     never be a traversal payload even if some future caller forgets the rule.
+//   - Control characters (including newline and tab) are rejected because the
+//     name is interpolated into a Markdown heading and printed to a terminal: a
+//     newline breaks the heading, and an ESC could forge terminal output.
+//   - The length is bounded, so the name cannot swamp the output it labels.
+func ValidateName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if n := len([]rune(name)); n > MaxNameLen {
+		return fmt.Errorf("name is %d characters; the maximum is %d", n, MaxNameLen)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("name %q may not contain a path separator; it is a label, never a folder name", name)
+	}
+	if name == ".." || strings.Contains(name, "..") {
+		return fmt.Errorf("name %q may not contain %q", name, "..")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("name contains a control character (U+%04X); it must be a single line of plain text", r)
 		}
 	}
 	return nil

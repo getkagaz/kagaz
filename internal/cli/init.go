@@ -19,6 +19,9 @@ type InitPayload struct {
 	Vault string `json:"vault"`
 	// Root is the vault root directory.
 	Root string `json:"root"`
+	// Name is the vault's human label: the --name given, or the vault-root
+	// folder name that Kagaz falls back to when vault.yaml sets none.
+	Name string `json:"name"`
 	// Created lists the directories created, relative to the root.
 	Created []string `json:"created"`
 	// Demo reports whether the vault was populated with demo documents.
@@ -34,6 +37,7 @@ type InitPayload struct {
 func newInitCommand(rt *Runtime) *cobra.Command {
 	var (
 		root    string
+		name    string
 		fyStart int
 		demo    bool
 		force   bool
@@ -50,6 +54,12 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 			if fyStart < 1 || fyStart > 12 {
 				return fmt.Errorf("--fy-start must be 1-12, got %d", fyStart)
 			}
+			name = strings.TrimSpace(name)
+			// Validated before anything is written: a name Kagaz will refuse to
+			// load must not first become a file on disk.
+			if err := config.ValidateName(name); err != nil {
+				return err
+			}
 			if root == "" {
 				root = "~/Documents"
 			}
@@ -63,6 +73,12 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 
 			if _, err := os.Stat(vaultFile); err == nil && !force {
 				payload.Existing = true
+				// Report the name the vault already has, not the one that was
+				// not applied: nothing was overwritten.
+				payload.Name = filepath.Base(abs)
+				if existing, err := config.LoadFile(vaultFile); err == nil {
+					payload.Name = existing.DisplayName()
+				}
 				return rt.Emit(&Response{
 					Command: "init",
 					Status:  StatusOK,
@@ -76,7 +92,7 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return err
 			}
-			if err := os.WriteFile(vaultFile, []byte(vaultYAML(fyStart, demo)), 0o644); err != nil {
+			if err := os.WriteFile(vaultFile, []byte(vaultYAML(name, fyStart, demo)), 0o644); err != nil {
 				return err
 			}
 			cfg, err := config.LoadFile(vaultFile)
@@ -84,6 +100,7 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				return fmt.Errorf("the vault.yaml just written does not load: %w", err)
 			}
 			rt.SetConfig(cfg)
+			payload.Name = cfg.DisplayName()
 
 			dirs := make([]string, 0, len(cfg.Structure))
 			for _, cat := range cfg.Structure {
@@ -119,6 +136,7 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 
 	f := cmd.Flags()
 	f.StringVar(&root, "root", "", "vault root directory (default ~/Documents)")
+	f.StringVar(&name, "name", "", "human label for the vault, e.g. \"Personal & Family KYC\" (default: the root folder name)")
 	f.IntVar(&fyStart, "fy-start", 1, "fiscal year start month, 1-12")
 	f.BoolVar(&demo, "demo", false, "populate an explorable demo vault")
 	f.BoolVar(&force, "force", false, "overwrite an existing vault.yaml")
@@ -178,10 +196,11 @@ func humanInit(w io.Writer, payload any) error {
 		return fmt.Errorf("init: unexpected payload %T", payload)
 	}
 	if p.Existing {
-		fmt.Fprintf(w, "vault already configured: %s\n", p.Vault)
+		fmt.Fprintf(w, "vault already configured: %s (%s)\n", p.Vault, p.Name)
 		return nil
 	}
 	fmt.Fprintf(w, "wrote %s\n", p.Vault)
+	fmt.Fprintf(w, "vault name: %s\n", p.Name)
 	fmt.Fprintf(w, "created %d category folders under %s\n", len(p.Created), p.Root)
 	if p.Demo {
 		fmt.Fprintf(w, "populated %d demo documents with sidecars and Finder tags\n", p.Documents)
@@ -201,11 +220,24 @@ func humanInit(w io.Writer, payload any) error {
 // With --demo the tag vocabulary is seeded to match the documents that are
 // about to be written, including the fiscal-year tags fycal.Year.Tag() renders,
 // so `kagaz lint` is clean on a freshly initialised demo vault.
-func vaultYAML(fyStart int, demo bool) string {
+func vaultYAML(name string, fyStart int, demo bool) string {
 	var b strings.Builder
 	b.WriteString("# Kagaz vault configuration. Every field has a default (docs/configuration.md);\n")
 	b.WriteString("# examples/vault.yaml in the Kagaz repository shows every available knob.\n")
 	b.WriteString("version: 1\n\n")
+	// `name:` is written only when the user actually chose one. Filling it in
+	// from the folder name would put a value in the file that nobody asked for
+	// and that then goes stale the moment the folder is renamed -- whereas an
+	// absent name simply keeps following the folder. The commented form shows
+	// the knob exists.
+	b.WriteString("# A human label for this vault, shown by `kagaz doctor` and at the top of the\n")
+	b.WriteString("# generated INDEX.md and AGENTS.md. Display only: it never becomes a folder\n")
+	b.WriteString("# name or any part of a path. Omitted, the vault_root folder name is used.\n")
+	if name == "" {
+		b.WriteString("# name: Personal & Family KYC\n\n")
+	} else {
+		fmt.Fprintf(&b, "name: %q\n\n", name)
+	}
 	b.WriteString("# The vault root, relative to this file, so the vault stays portable.\n")
 	b.WriteString("vault_root: .\n\n")
 	fmt.Fprintf(&b, "fiscal_year:\n  start_month: %d\n", fyStart)

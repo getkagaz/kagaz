@@ -111,15 +111,15 @@ func (g *Generator) Write(tree *search.Tree) ([]string, error) {
 	return []string{idxPath, agentsPath}, nil
 }
 
-// VaultName is the short human label for the vault: the folder name of its
-// root. Never the absolute path — that is specific to one machine and would
-// make the generated files unstable across a sync.
+// VaultName is the short human label for the vault: vault.yaml's `name:` when
+// it sets one, otherwise the folder name of the vault root. Never the absolute
+// path — that is specific to one machine and would make the generated files
+// unstable across a sync.
+//
+// It is the only place either generated document learns the name, and it is
+// used for display alone: nothing here builds a path from it.
 func (g *Generator) VaultName() string {
-	name := filepath.Base(filepath.Clean(g.cfg.VaultRoot))
-	if name == "." || name == string(filepath.Separator) || name == "" {
-		return "vault"
-	}
-	return name
+	return g.cfg.DisplayName()
 }
 
 // Index renders INDEX.md.

@@ -28,6 +28,7 @@ Creates a new vault: writes `vault.yaml`, creates the category folders from
 |---|---|
 | `--fy-start <1-12>` | Sets `fiscal_year.start_month`. |
 | `--root <path>` | Vault root, instead of the default. |
+| `--name <label>` | Human label for the vault, e.g. `"Personal & Family KYC"`, written as `name:` in the new `vault.yaml`. Without it, `init` leaves the field commented out and Kagaz displays the root folder name. Display only — it never becomes part of a path. See [configuration.md](configuration.md#name). |
 | `--demo` | Populates a fully explorable demo vault: synthetic documents (not real PDFs of anyone's actual paperwork) across several categories and owners, with sidecars and Finder tags already applied, seeded people and fiscal-year tag vocabulary — such that `kagaz find` returns sensible results and `kagaz lint` is clean immediately after `init --demo`. |
 
 ## `kagaz find`
@@ -201,6 +202,9 @@ Checks vault health and environment: vault found and valid, Spotlight
 (`mdfind`) available, `pdftotext` available, `kagaz-machelper` available,
 which classifier backends are usable, Ollama reachable, iCloud/`brctl`
 available, extended-attribute (xattr) support on the vault's filesystem.
+It also reports the vault's name — `name:` from `vault.yaml`, or the root
+folder name — as a `vault:` line and as `vault_name` in `--json`, which is
+how a GUI learns which vault it is pointed at.
 Exits non-zero only for problems that actually break core function — a
 missing optional tool degrades a feature and is reported, not treated as
 fatal (Global Constraint 9).

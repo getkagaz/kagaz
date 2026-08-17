@@ -20,6 +20,28 @@ Highest schema version this file was written for. Defaults to `1`. A
 `vault.yaml` whose `version` is newer than the running `kagaz` build
 understands fails to load with a message telling you to upgrade.
 
+## `name`
+
+Optional. A human label for this vault — `Personal & Family KYC`, `RelyWeb
+Corporate` — so that several vaults are told apart by what they are for
+rather than by where they happen to live.
+
+Omitted (as in every `vault.yaml` written before this field existed), Kagaz
+displays the **folder name of `vault_root`** instead. The fallback is
+resolved at display time and is never written back into your file, so a
+hand-edited `vault.yaml` does not silently grow a `name:` it never had.
+
+The name is **display only**. It appears in `kagaz doctor` (and as
+`vault_name` in `kagaz doctor --json`) and as the title of the generated
+`INDEX.md` and `AGENTS.md`. It never becomes a folder name, a filename, or
+any part of a destination, manifest or staging path — no path-building code
+in Kagaz reads it. As a second line of defence it is rejected at load time
+if it contains a path separator (`/`, `\`), `..`, or a control character, or
+if it is longer than 80 characters.
+
+`kagaz init --name "Personal & Family KYC"` writes it; without `--name`,
+`init` leaves a commented example rather than guessing one from the folder.
+
 ## `vault_root`
 
 Root directory of the vault. Defaults to `~/Documents`. A leading `~`

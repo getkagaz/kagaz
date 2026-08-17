@@ -12,6 +12,13 @@
 
 version: 1
 
+# A human label for this vault, so several vaults are told apart by what they
+# are for rather than by where they sit. Shown by `kagaz doctor` and used as the
+# title of the generated INDEX.md and AGENTS.md. Display only: it is never a
+# folder name and never part of any path. Omit it and Kagaz shows the vault_root
+# folder name instead, which is what every vault.yaml written so far does.
+# name: Personal & Family KYC
+
 # Root directory of the vault. A leading ~ expands to your home directory. A
 # relative path resolves against the directory holding this vault.yaml, so
 # the vault stays portable if you move it (including in/out of iCloud Drive).

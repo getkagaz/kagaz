@@ -55,6 +55,15 @@ type DoctorPayload struct {
 	Platform string `json:"platform"`
 	// Version is the kagaz build version.
 	Version string `json:"version"`
+	// VaultName is the human label for the vault: vault.yaml's `name:`, or the
+	// vault-root folder name when it sets none. Omitted when no vault could be
+	// loaded at all, because then there is nothing to name.
+	//
+	// doctor carries it because doctor is the command a GUI already calls to
+	// learn what it is pointed at; a label is exactly that kind of fact. It is
+	// deliberately not added to every command's envelope — that would be a wide
+	// contract change to repeat one constant string.
+	VaultName string `json:"vault_name,omitempty"`
 }
 
 func newDoctorCommand(rt *Runtime) *cobra.Command {
@@ -101,6 +110,7 @@ func runDoctor(rt *Runtime) DoctorPayload {
 			Fix:    "run `kagaz init`, or pass --vault <path to vault.yaml>",
 		})
 	default:
+		payload.VaultName = cfg.DisplayName()
 		add(Check{Name: "vault", Status: CheckOK, Detail: cfg.Path})
 		add(checkVaultRoot(cfg))
 		add(checkXattr(cfg))
@@ -298,7 +308,11 @@ func humanDoctor(w io.Writer, payload any) error {
 		return fmt.Errorf("doctor: unexpected payload %T", payload)
 	}
 	symbol := map[string]string{CheckOK: "ok  ", CheckWarn: "warn", CheckFail: "FAIL"}
-	fmt.Fprintf(w, "kagaz %s on %s\n\n", p.Version, p.Platform)
+	fmt.Fprintf(w, "kagaz %s on %s\n", p.Version, p.Platform)
+	if p.VaultName != "" {
+		fmt.Fprintf(w, "vault: %s\n", p.VaultName)
+	}
+	fmt.Fprintln(w)
 	for _, c := range p.Checks {
 		fmt.Fprintf(w, "%s  %-22s %s\n", symbol[c.Status], c.Name, c.Detail)
 		if c.Impact != "" {

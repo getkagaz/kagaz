@@ -873,6 +873,111 @@ func TestInitSeedsNoPeopleButDemoDoes(t *testing.T) {
 // shared-folder error message points at is actually present in the file the
 // user is told to edit: "add `shared: _Shared` under `structure.company`" is
 // unfollowable when vault.yaml has no structure block.
+// TestInitNameIsWrittenOnlyWhenAsked: `--name` writes the field; without it,
+// init leaves a commented example rather than freezing the folder name into the
+// file, and Kagaz displays the folder name instead.
+func TestInitNameIsWrittenOnlyWhenAsked(t *testing.T) {
+	const label = "Personal & Family KYC"
+	tests := []struct {
+		name       string
+		args       []string
+		wantYAML   string
+		wantNoYAML string
+		wantName   string
+	}{
+		{
+			name:     "with --name",
+			args:     []string{"--name", label},
+			wantYAML: "name: \"" + label + "\"\n",
+			wantName: label,
+		},
+		{
+			name:       "without --name",
+			args:       nil,
+			wantYAML:   "# name: Personal & Family KYC\n",
+			wantNoYAML: "\nname:",
+			wantName:   "labelled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "labelled")
+			args := append([]string{"init", "--root", root}, tt.args...)
+			out, errw, code := run(t, args...)
+			if code != ExitOK {
+				t.Fatalf("init exit %d: %s", code, errw)
+			}
+			if !strings.Contains(out, "vault name: "+tt.wantName) {
+				t.Errorf("init did not report the vault name:\n%s", out)
+			}
+			raw, err := os.ReadFile(filepath.Join(root, "vault.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), tt.wantYAML) {
+				t.Errorf("vault.yaml is missing %q:\n%s", tt.wantYAML, raw)
+			}
+			if tt.wantNoYAML != "" && strings.Contains(string(raw), tt.wantNoYAML) {
+				t.Errorf("vault.yaml grew a name nobody authored:\n%s", raw)
+			}
+			cfg, err := config.LoadFile(filepath.Join(root, "vault.yaml"))
+			if err != nil {
+				t.Fatalf("the vault.yaml init wrote does not load: %v", err)
+			}
+			if got := cfg.DisplayName(); got != tt.wantName {
+				t.Errorf("DisplayName() = %q, want %q", got, tt.wantName)
+			}
+		})
+	}
+}
+
+// TestInitRejectsAPathShapedNameBeforeWriting: a name Kagaz will not load must
+// not first become a file on disk.
+func TestInitRejectsAPathShapedNameBeforeWriting(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "v")
+	out, errw, code := run(t, "init", "--root", root, "--name", "../../escape")
+	if code == ExitOK {
+		t.Fatalf("init accepted a traversal-shaped name: %s%s", out, errw)
+	}
+	if !strings.Contains(errw, "..") {
+		t.Errorf("the error does not explain what was wrong: %s", errw)
+	}
+	if _, err := os.Stat(filepath.Join(root, "vault.yaml")); err == nil {
+		t.Error("init wrote a vault.yaml it then refuses to load")
+	}
+}
+
+// TestDoctorReportsTheVaultName: doctor is the command a GUI already calls to
+// learn what it is pointed at, so it is where the label surfaces.
+func TestDoctorReportsTheVaultName(t *testing.T) {
+	const label = "RelyWeb Corporate"
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"explicit name", []string{"--name", label}, label},
+		{"fallback to the folder name", nil, "corp"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "corp")
+			if _, errw, code := run(t, append([]string{"init", "--root", root}, tt.args...)...); code != ExitOK {
+				t.Fatalf("init exit %d: %s", code, errw)
+			}
+			vault := filepath.Join(root, "vault.yaml")
+
+			out, _, _ := run(t, "--vault", vault, "doctor")
+			if !strings.Contains(out, "vault: "+tt.want+"\n") {
+				t.Errorf("doctor does not name the vault:\n%s", out)
+			}
+			jsonOut, _, _ := run(t, "--vault", vault, "doctor", "--json")
+			if got := decode(t, jsonOut)["vault_name"]; got != tt.want {
+				t.Errorf("doctor --json vault_name = %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInitWritesAnEditableStructureBlock(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "v")
 	if _, errw, code := run(t, "init", "--root", root); code != ExitOK {

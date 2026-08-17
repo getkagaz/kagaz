@@ -39,7 +39,9 @@ AGENTS.md renderer:
 
 Placeholders used in this file:
 
-  {KAGAZ_VAULT_NAME}          -- a short human label for the vault (folder name of vault_root)
+  {KAGAZ_VAULT_NAME}          -- a short human label for the vault: vault.yaml's `name:`,
+                                 or the folder name of vault_root when it sets none.
+                                 Display only -- never used to build a path.
   {KAGAZ_FILENAME_PATTERN}    -- filename.pattern, verbatim
   {KAGAZ_WORD_SEPARATOR}      -- filename.word_separator
   {KAGAZ_FIELD_SEPARATOR}     -- filename.field_separator

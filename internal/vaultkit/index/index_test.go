@@ -232,6 +232,67 @@ func TestEmptyVaultRendersNoneYetRatherThanBlanks(t *testing.T) {
 	}
 }
 
+// TestVaultNameComesFromConfigWithAFolderFallback: both generated documents
+// title themselves with the vault's label. The fixture vault sets no `name:`,
+// which is the back-compatible case the goldens pin; an explicit name replaces
+// the folder name in both files and nowhere else.
+func TestVaultNameComesFromConfigWithAFolderFallback(t *testing.T) {
+	tests := []struct {
+		name    string
+		nameKey string
+		want    string
+	}{
+		{"absent name falls back to the root folder", "", "named-vault"},
+		{"explicit name is used", "name: Personal & Family KYC\n", "Personal & Family KYC"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "named-vault")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			yaml := "version: 1\n" + tt.nameKey + "vault_root: .\n" +
+				"structure:\n  financial:\n    path: Financial\n    layout: \"{Owner}\"\n"
+			path := filepath.Join(dir, "vault.yaml")
+			if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			g, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := g.VaultName(); got != tt.want {
+				t.Fatalf("VaultName() = %q, want %q", got, tt.want)
+			}
+			idx, err := g.Index(&search.Tree{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(idx, "# INDEX — "+tt.want+"\n") {
+				t.Errorf("INDEX.md title does not carry the vault name:\n%s", firstLine(idx))
+			}
+			agents, err := g.Agents(&search.Tree{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(agents, "# AGENTS.md — "+tt.want+"\n") {
+				t.Errorf("AGENTS.md heading does not carry the vault name:\n%s", firstLine(agents))
+			}
+		})
+	}
+}
+
+func firstLine(s string) string {
+	if i := strings.Index(s, "\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 func TestWriteProducesBothFiles(t *testing.T) {
 	dir := t.TempDir()
 	yaml := "version: 1\nvault_root: .\nstructure:\n  financial:\n    path: Financial\n    layout: \"{Owner}\"\n"

@@ -12,6 +12,14 @@
       "default": 1,
       "minimum": 1
     },
+    "name": {
+      "type": "string",
+      "description": "Optional human label for this vault, e.g. \"Personal & Family KYC\". Display only: it names the vault in kagaz doctor and at the top of the generated INDEX.md and AGENTS.md, and it never contributes to any filesystem path. Omitted, Kagaz displays the vault_root folder name instead. May not contain a path separator, \"..\", or a control character, and is at most 80 characters.",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$",
+      "not": { "pattern": "\\.\\." }
+    },
     "vault_root": {
       "type": "string",
       "description": "Root directory of the vault. A leading ~ expands to the user's home directory. A relative path resolves against the directory containing vault.yaml, so a vault stays portable when moved wholesale.",
