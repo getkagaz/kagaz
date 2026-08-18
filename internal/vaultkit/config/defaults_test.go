@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestDefaultStructureGivesEverySharedLabel pins the fix for the defect that a
 // vault built from the defaults could not file a single unowned document:
@@ -81,5 +84,39 @@ func TestExplicitStructureKeepsAnEmptySharedLabel(t *testing.T) {
 	}
 	if got := cfg.Structure["company"].Shared; got != "" {
 		t.Fatalf("an explicitly declared category gained shared=%q; the refusal path is no longer reachable", got)
+	}
+}
+
+// TestClassifyEngineDefaultsToApple pins the default engine. apple needs
+// nothing downloaded and nothing running -- where Apple's on-device model is
+// missing the chain answers from rules -- which is what makes it the one
+// engine safe to default to.
+func TestClassifyEngineDefaultsToApple(t *testing.T) {
+	c := &Config{}
+	c.applyDefaults()
+	if c.Classify.Engine != EngineApple {
+		t.Errorf("classify.engine = %q, want %q", c.Classify.Engine, EngineApple)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("the defaults must validate: %v", err)
+	}
+}
+
+// TestClassifyEngineAutoIsRejected pins that the retired value fails loudly.
+// "auto" chose a tier without saying which; reading it as "apple" now would be
+// exactly the silent rewrite of a user's config that naming the four engines
+// was meant to end. The message has to say what to put instead.
+func TestClassifyEngineAutoIsRejected(t *testing.T) {
+	c := &Config{}
+	c.applyDefaults()
+	c.Classify.Engine = "auto"
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("classify.engine: auto must be rejected")
+	}
+	for _, want := range []string{EngineApple, EngineMLX, EngineOllama, EngineRules} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
 	}
 }

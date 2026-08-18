@@ -407,24 +407,38 @@ func TestDecodeClassifyResponse(t *testing.T) {
 }
 
 func TestDecodeProbeResponse(t *testing.T) {
-	if ok, reason := decodeProbeResponse(fixture(t, "probe_available.json")); !ok || reason != "" {
-		t.Fatalf("available probe = (%v, %q), want (true, \"\")", ok, reason)
+	if ok, reason, code := decodeProbeResponse(fixture(t, "probe_available.json")); !ok || reason != "" || code != "" {
+		t.Fatalf("available probe = (%v, %q, %q), want (true, \"\", \"\")", ok, reason, code)
 	}
-	ok, reason := decodeProbeResponse(fixture(t, "probe_unavailable.json"))
+	ok, reason, code := decodeProbeResponse(fixture(t, "probe_unavailable.json"))
 	if ok {
 		t.Fatal("unavailable probe reported available")
 	}
 	if !contains(reason, "macOS 26") {
 		t.Errorf("reason = %q, want the helper's reason", reason)
 	}
-	if ok, _ := decodeProbeResponse([]byte("not json")); ok {
-		t.Error("unreadable probe must count as unavailable")
+	// The fixture predates reason_code, which is exactly the case an older
+	// helper presents: prose, and an honest "unknown" rather than a guess.
+	if code != ReasonUnknown {
+		t.Errorf("code = %q, want %q for a helper that sends none", code, ReasonUnknown)
 	}
-	if ok, reason := decodeProbeResponse([]byte(`{"contract":9,"available":true}`)); ok || !contains(reason, "contract") {
-		t.Errorf("mismatched contract probe = (%v, %q), want unavailable", ok, reason)
+	if ok, _, code := decodeProbeResponse([]byte("not json")); ok || code != ReasonUnreadableProbe {
+		t.Errorf("unreadable probe = (%v, %q), want unavailable/%s", ok, code, ReasonUnreadableProbe)
 	}
-	if ok, _ := decodeProbeResponse(fixture(t, "classify_error.json")); ok {
+	if ok, reason, code := decodeProbeResponse([]byte(`{"contract":9,"available":true}`)); ok ||
+		!contains(reason, "contract") || code != ReasonContractMismatch {
+		t.Errorf("mismatched contract probe = (%v, %q, %q), want unavailable", ok, reason, code)
+	}
+	if ok, _, _ := decodeProbeResponse(fixture(t, "classify_error.json")); ok {
 		t.Error("a structured error probe must count as unavailable")
+	}
+	// A helper that does send a code has it passed through verbatim: the
+	// vocabulary is the helper's to extend, and Go must not re-derive it from
+	// the prose.
+	if ok, _, code := decodeProbeResponse(
+		[]byte(`{"contract":1,"engine":"mlx","available":false,"reason":"no weights","reason_code":"weights_missing"}`)); ok ||
+		code != ReasonWeightsMissing {
+		t.Errorf("probe with a code = (%v, %q), want unavailable/%s", ok, code, ReasonWeightsMissing)
 	}
 }
 

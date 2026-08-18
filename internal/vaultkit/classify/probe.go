@@ -31,19 +31,20 @@ type probeCache struct {
 	cached bool
 	ok     bool
 	why    string
+	code   string
 }
 
 // result returns the cached answer, or runs probe. probe reports availability,
-// the reason when unavailable, and whether the answer is decisive enough to
-// cache.
-func (p *probeCache) result(probe func() (ok bool, why string, decisive bool)) (bool, string) {
+// the prose reason and the machine-readable reason code when unavailable, and
+// whether the answer is decisive enough to cache.
+func (p *probeCache) result(probe func() (ok bool, why, code string, decisive bool)) (bool, string, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.cached {
-		return p.ok, p.why
+		return p.ok, p.why, p.code
 	}
-	ok, why, decisive := probe()
-	p.ok, p.why = ok, why
+	ok, why, code, decisive := probe()
+	p.ok, p.why, p.code = ok, why, code
 	p.cached = decisive
-	return ok, why
+	return ok, why, code
 }

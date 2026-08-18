@@ -57,7 +57,7 @@ All mutating and reasoning logic lives under `internal/vaultkit/`:
 - **`doctypes`** — the built-in document-type catalog plus per-vault
   extensions, and the offline rules-based classifier used as the universal
   fallback.
-- **`classify`** — the tiered classifier chain (`auto|apple|mlx|ollama|rules`)
+- **`classify`** — the tiered classifier chain (`apple|mlx|ollama|rules`)
   behind one interface; validates every result against the resolved catalog
   before it's trusted (Global Constraint 8).
 - **`ocr`** — text extraction, in preference order: plain text read directly

@@ -40,6 +40,12 @@ type Check struct {
 	Impact string `json:"impact,omitempty"`
 	// Fix is the suggested remedy, when there is one.
 	Fix string `json:"fix,omitempty"`
+	// Reason is a machine-readable code for WHICH precondition failed, set on
+	// the classifier checks. Detail is prose and is reworded freely; Reason is
+	// an API. A client decides what to offer -- a 1.6 GB model download, a
+	// rebuild, a daemon to start -- from this and never from the sentence.
+	// See classify's Reason* constants for the vocabulary.
+	Reason string `json:"reason,omitempty"`
 }
 
 // DoctorPayload is the `kagaz doctor --json` body.
@@ -237,9 +243,10 @@ func checkClassifiers(cfg *config.Config) []Check {
 	chain := classify.New(cfg, nil)
 	var out []Check
 
-	// The order first, then the tiers. With engine=auto the interesting fact is
-	// not "is mlx installed" but "what will actually be tried, in what order",
-	// and that is a property of the chain, not of any one backend.
+	// The order first, then the tiers. The interesting fact is not "is mlx
+	// installed" but "what will actually be tried, in what order" -- a
+	// property of the chain, not of any one backend, and
+	// the thing classify.engine decides.
 	plan := chain.Plan()
 	order := Check{Name: "classify:chain", Status: CheckOK,
 		Detail: plan.Engine + ": " + strings.Join(plan.Order, " -> ")}
@@ -250,18 +257,27 @@ func checkClassifiers(cfg *config.Config) []Check {
 		order.Status = CheckFail
 		order.Detail = plan.Err
 		order.Impact = "every classification fails until this engine is installed or classify.engine is changed"
-		order.Fix = "install the engine named above, or set classify.engine: auto in vault.yaml"
+		order.Fix = "install the engine named above, or set classify.engine: apple in vault.yaml (apple, then rules)"
 	}
 	out = append(out, order)
 
 	for _, s := range chain.Describe() {
-		c := Check{Name: "classify:" + s.Name, Status: CheckOK, Detail: s.Detail}
+		c := Check{Name: "classify:" + s.Name, Status: CheckOK, Detail: s.Detail, Reason: s.Reason}
 		if !s.Available {
 			c.Status = CheckWarn
 			if c.Detail == "" {
 				c.Detail = "unavailable"
 			}
-			c.Impact = "this classifier tier is skipped; the chain falls back to the next one"
+			// What an unavailable tier costs depends on whether it is the
+			// configured one: an unused tier costs nothing, the configured
+			// apple tier means documents are read by rules instead, and a
+			// configured mlx/ollama is the hard failure classify:chain
+			// already reports above.
+			c.Impact = "this tier is not usable; classify.engine is " + cfg.Classify.Engine +
+				", so it is only used if you set classify.engine: " + s.Name
+			if cfg.Classify.Engine == s.Name {
+				c.Impact = "documents are read by the rules tier instead of " + s.Name
+			}
 		}
 		out = append(out, c)
 	}

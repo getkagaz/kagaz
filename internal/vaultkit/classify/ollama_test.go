@@ -126,7 +126,11 @@ func TestOllamaDoesNotFollowRedirectOffHost(t *testing.T) {
 	cat := testCatalog(t)
 	// Deliberately NOT srv.Client(): the production client is what must refuse.
 	o := &Ollama{Endpoint: srv.URL, Model: "qwen2.5:3b"}
-	c := &Chain{Engine: config.EngineOllama, MinConfidence: 0.5, Catalog: cat, Rules: &Rules{Catalog: cat}, Ollama: o}
+	// The opt-in: this test is about the ollama tier degrading, and
+	// with classify.fallback_to_rules false a forced tier that fails
+	// is an error instead (see TestNamedEngineFallbackToRules).
+	c := &Chain{Engine: config.EngineOllama, MinConfidence: 0.5, Catalog: cat,
+		Rules: &Rules{Catalog: cat}, Ollama: o}
 
 	got, err := c.Classify(context.Background(), Request{Text: invoiceText})
 	if err != nil {
@@ -196,7 +200,11 @@ func TestOllamaClassify(t *testing.T) {
 		t.Errorf("Name() = %q, want ollama", o.Name())
 	}
 
-	c := &Chain{Engine: config.EngineOllama, MinConfidence: 0.5, Catalog: cat, Rules: &Rules{Catalog: cat}, Ollama: o}
+	// The opt-in: this test is about the ollama tier degrading, and
+	// with classify.fallback_to_rules false a forced tier that fails
+	// is an error instead (see TestNamedEngineFallbackToRules).
+	c := &Chain{Engine: config.EngineOllama, MinConfidence: 0.5, Catalog: cat,
+		Rules: &Rules{Catalog: cat}, Ollama: o}
 	got, err := c.Classify(context.Background(), Request{Text: invoiceText})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
@@ -319,7 +327,11 @@ func TestOllamaUnavailableWhenModelNotPulled(t *testing.T) {
 	}
 
 	cat := testCatalog(t)
-	c := &Chain{Engine: config.EngineOllama, MinConfidence: 0.5, Catalog: cat, Rules: &Rules{Catalog: cat}, Ollama: o}
+	// The opt-in: this test is about the ollama tier degrading, and
+	// with classify.fallback_to_rules false a forced tier that fails
+	// is an error instead (see TestNamedEngineFallbackToRules).
+	c := &Chain{Engine: config.EngineOllama, MinConfidence: 0.5, Catalog: cat,
+		Rules: &Rules{Catalog: cat}, Ollama: o}
 	_, err := c.Classify(context.Background(), Request{Text: invoiceText})
 	if err == nil {
 		t.Fatal("forced ollama with an unpulled model should be an error, not a silent rules degradation")

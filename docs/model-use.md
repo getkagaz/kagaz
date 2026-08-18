@@ -34,20 +34,19 @@ model, you know exactly what it is, where it runs, and under what license.
    who already run Ollama and want to point Kagaz at a model of their
    choosing.
 
-`classify.engine: auto` (the default) chains every semantic tier this machine
-actually has, cheapest first: **apple → mlx (if available) → ollama (if
-available) → rules**. A tier hands over to the *next* one when it is
-unavailable, errors, times out, emits malformed output, speaks an unknown
-contract, declines with `unclassified`, answers below `min_confidence`, or
-names a doctype outside the catalog — a decline by one model does not bind
-another — and the answer falls to rules only when no tier does better.
+`classify.engine` names one of four engines, and every model engine ends at the
+deterministic rules tier: **apple** (the default — Apple's on-device model,
+then rules), **mlx**, **ollama**, and **rules** (no model is run and no
+availability probe is taken). There is no `auto`: a chain you cannot see is one
+you cannot reason about, and `engine: auto` is now rejected with an error
+rather than quietly read as something else.
 
-Nothing is installed on your behalf: MLX and Ollama are reached only when
-their weights or daemon are already present, so a machine that never ran
-`kagaz model pull` behaves exactly as before. Naming an engine explicitly
-still means "that tier, then rules": `mlx` never chains on to `ollama`.
-`rules` is the explicit no-LLM choice — no model is run and no availability
-probe is taken. `kagaz doctor` prints the order the chain will actually try.
+Nothing is installed on your behalf. `apple` needs no download and no daemon,
+and on a Mac without the on-device model the rules tier answers — which is what
+makes it safe as the default. MLX and Ollama are reached only when you name
+them, and naming one whose weights or daemon are not there is an error naming
+the fix, never a quiet fall back. `kagaz doctor` prints the order it will
+actually try, and says which precondition is missing when one is.
 
 ## The only network call
 

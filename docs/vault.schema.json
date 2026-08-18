@@ -177,7 +177,7 @@
               "type": "string",
               "enum": ["auto", "true", "false"],
               "description": "Tri-state: \"auto\" tries Ollama only after the cheaper runners fail, \"true\" forces it into rotation, \"false\" disables it.",
-              "default": "auto"
+              "default": "apple"
             },
             "model": {
               "type": "string",
@@ -199,8 +199,8 @@
       "properties": {
         "engine": {
           "type": "string",
-          "enum": ["auto", "apple", "mlx", "ollama", "rules"],
-          "description": "\"auto\" chains every semantic tier this machine has: apple -> mlx (if available) -> ollama (if available) -> rules. A named engine runs that tier and then rules (apple -> rules, mlx -> rules, ollama -> rules). \"rules\" is the explicit no-LLM choice: no model is run and no availability probe is taken. Under auto, a tier that is unavailable, errors, times out, emits malformed output, speaks an unknown contract, declines with \"unclassified\", answers below min_confidence, or names a doctype outside the catalog hands over to the NEXT tier; only when none does better does the answer come from rules. Each tier is attempted at most once per document, unavailable tiers are skipped on a cached probe, and the whole chain honours the caller's cancellation. A named engine that is unavailable is an error naming the fix.",
+          "enum": ["apple", "mlx", "ollama", "rules"],
+          "description": "Which tier reads the document. Every model engine ends at the deterministic rules tier -- that is part of what an engine is, not a separate setting: \"apple\" runs Apple's on-device model then rules, \"mlx\" and \"ollama\" run the configured model then rules, and \"rules\" is the no-model choice (no model is run and no availability probe is taken). Each engine runs its own tier and never another one. \"auto\" no longer exists and is REJECTED rather than read as \"apple\". \"apple\" is the default because it needs nothing downloaded and nothing running: where the on-device model is absent the rules tier answers. \"mlx\" and \"ollama\" are installed on purpose, so naming one that is unavailable is an error naming the fix.",
           "default": "auto"
         },
         "model": {
@@ -217,7 +217,7 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Minimum confidence a classifier result must clear before it is accepted; below this, Kagaz degrades to the rules engine and then to \"unclassified\" rather than guessing.",
+          "description": "Minimum confidence a classifier result must clear before it is accepted; below this the tier has declined and the deterministic rules tier answers, and an unmatched rules answer is \"unclassified\" rather than a guess.",
           "default": 0.5
         }
       }

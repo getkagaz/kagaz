@@ -40,19 +40,30 @@ func (a *Apple) Name() string { return config.EngineApple }
 // A decoded answer is cached for the process lifetime; a timeout is not. It is
 // race-safe.
 func (a *Apple) Available() bool {
-	ok, _ := a.probeCache.result(a.probe)
+	ok, _, _ := a.probeCache.result(a.probe)
 	return ok
 }
 
 // detail explains the backend's state for `kagaz doctor`. It reuses the cached
 // probe rather than running a second one.
 func (a *Apple) detail() string {
-	ok, why := a.probeCache.result(a.probe)
+	ok, why, _ := a.probeCache.result(a.probe)
 	if ok {
 		path, _ := a.helperPath()
 		return path
 	}
 	return why
+}
+
+// reason names WHICH precondition is unmet, from the stable vocabulary in
+// helper.go, for a client that must decide what to offer the user. Empty when
+// the tier is available.
+func (a *Apple) reason() string {
+	ok, _, code := a.probeCache.result(a.probe)
+	if ok {
+		return ""
+	}
+	return code
 }
 
 // hint names the fix for a forced-but-unavailable apple engine.
@@ -69,12 +80,14 @@ func (a *Apple) helperPath() (string, bool) {
 }
 
 // probe runs `kagaz-machelper classify --backend apple --probe --json` once.
-func (a *Apple) probe() (bool, string, bool) {
+func (a *Apple) probe() (bool, string, string, bool) {
 	path, ok := a.helperPath()
 	if !ok {
 		// Not cached: the user may install the helper while kagaz runs, and
 		// re-checking costs one stat.
-		return false, ocr.HelperBinary + " not found (macOS only; set $" + ocr.HelperPathEnv + " for a local build)", false
+		return false,
+			ocr.HelperBinary + " not found (macOS only; set $" + ocr.HelperPathEnv + " for a local build)",
+			ReasonHelperMissing, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -82,10 +95,14 @@ func (a *Apple) probe() (bool, string, bool) {
 	out, err := a.runner()(ctx, path, []string{"classify", "--backend", config.EngineApple, "--probe", "--json"}, "")
 	if err != nil {
 		// A timeout is a cold start until proven otherwise: never cached.
-		return false, err.Error(), !isTimeout(err)
+		code := ReasonUnknown
+		if isTimeout(err) {
+			code = ReasonProbeTimeout
+		}
+		return false, err.Error(), code, !isTimeout(err)
 	}
-	available, reason := decodeProbeResponse(out)
-	return available, reason, true
+	available, reason, code := decodeProbeResponse(out)
+	return available, reason, code, true
 }
 
 // runner returns the injected runner or the real one.

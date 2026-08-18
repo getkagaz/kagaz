@@ -113,12 +113,37 @@ struct ClassifyResponse: Encodable {
 }
 
 /// `--probe` payload. Always exits 0 when the probe itself ran; `available`
-/// carries the answer and `reason` explains a `false`.
+/// carries the answer, `reason` explains a `false` in prose, and `reasonCode`
+/// says *which* precondition is unmet in a stable machine-readable form.
+///
+/// The code exists so a client never greps the sentence: `reason` is written
+/// for a person and reworded whenever it reads better, while `reason_code` is
+/// an API. For this tier the useful distinction is "this Mac can never host
+/// the model" from "it could, but not right now" -- neither is fixed by a
+/// download, which is what the Settings window needs to know.
 struct ProbeResponse: Encodable {
     let contract: Int
     let engine: String
     let available: Bool
     let reason: String?
+    var reasonCode: ProbeReasonCode?
+
+    enum CodingKeys: String, CodingKey {
+        case contract, engine, available, reason
+        case reasonCode = "reason_code"
+    }
+}
+
+/// The vocabulary of `reason_code`, shared with the Go core's Reason*
+/// constants in internal/vaultkit/classify/helper.go.
+enum ProbeReasonCode: String, Encodable {
+    /// This OS or build cannot host Apple's on-device model at all.
+    case osUnsupported = "os_unsupported"
+    /// The OS supports it, but the model is not usable right now: still
+    /// downloading, device not eligible, Apple Intelligence turned off.
+    case modelUnavailable = "model_unavailable"
+    /// Unavailable for a reason this helper could not classify.
+    case unknown = "unknown"
 }
 
 /// Failure payload. Written to stdout (not stderr) so the Go core can decode a

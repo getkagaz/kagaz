@@ -49,19 +49,32 @@ func (m *MLX) engine() string {
 // process lifetime; a timeout is not, because a first probe pays the cost of a
 // cold Python start.
 func (m *MLX) Available() bool {
-	ok, _ := m.probeCache.result(m.probe)
+	ok, _, _ := m.probeCache.result(m.probe)
 	return ok
 }
 
 // detail explains the backend's state for `kagaz doctor`, reusing the cached
 // probe rather than running a second one.
 func (m *MLX) detail() string {
-	ok, why := m.probeCache.result(m.probe)
+	ok, why, _ := m.probeCache.result(m.probe)
 	if ok {
 		path, _ := m.helperPath()
 		return path + " (" + m.Model + ")"
 	}
 	return why
+}
+
+// reason names WHICH of MLX's three independent preconditions is unmet -- the
+// helper binary, its Metal shader library, or the weights -- from the stable
+// vocabulary in helper.go. Only ReasonWeightsMissing is fixed by
+// `kagaz model pull`, and a client offering that download for either of the
+// others would cost the user 1.6 GB and change nothing.
+func (m *MLX) reason() string {
+	ok, _, code := m.probeCache.result(m.probe)
+	if ok {
+		return ""
+	}
+	return code
 }
 
 // hint names the fix for a forced-but-unavailable mlx engine.
@@ -84,24 +97,30 @@ func (m *MLX) runner() helperRunner {
 }
 
 // probe runs `kagaz-machelper-mlx classify --backend mlx --model <repo> --probe --json`.
-func (m *MLX) probe() (bool, string, bool) {
+func (m *MLX) probe() (bool, string, string, bool) {
 	path, ok := m.helperPath()
 	if !ok {
-		return false, MLXHelperBinary + " not found (set $" + MLXHelperPathEnv + " for a local build)", false
+		return false,
+			MLXHelperBinary + " not found (set $" + MLXHelperPathEnv + " for a local build)",
+			ReasonHelperMissing, false
 	}
 	if m.Model == "" {
 		// A config fact, not a runtime one: safe to cache.
-		return false, "no model configured (classify.model)", true
+		return false, "no model configured (classify.model)", ReasonModelNotConfigured, true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
 	out, err := m.runner()(ctx, path, []string{"classify", "--backend", config.EngineMLX, "--model", m.Model, "--probe", "--json"}, "")
 	if err != nil {
-		return false, err.Error(), !isTimeout(err)
+		code := ReasonUnknown
+		if isTimeout(err) {
+			code = ReasonProbeTimeout
+		}
+		return false, err.Error(), code, !isTimeout(err)
 	}
-	available, reason := decodeProbeResponse(out)
-	return available, reason, true
+	available, reason, code := decodeProbeResponse(out)
+	return available, reason, code, true
 }
 
 // Classify pipes the document text to kagaz-machelper-mlx on stdin and decodes

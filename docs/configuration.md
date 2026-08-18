@@ -127,51 +127,54 @@ vocabulary. Anything outside all of these is a `kagaz lint` finding.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `engine` | `"auto"` | `auto` \| `apple` \| `mlx` \| `ollama` \| `rules`. |
+| `engine` | `"apple"` | `apple` \| `mlx` \| `ollama` \| `rules`. |
 | `model` | `"mlx-community/Qwen2.5-3B-Instruct-4bit"` | Model id for `mlx`/`ollama`. |
 | `endpoint` | `"http://localhost:11434"` | Must resolve to localhost. |
-| `min_confidence` | `0.5` | 0–1. Below this, Kagaz degrades to `rules`, then to `unclassified`. |
+| `min_confidence` | `0.5` | 0–1. Below this the tier has declined and the `rules` tier answers. |
 
-### The fallback chain
+### The four engines
 
-| `engine` | Tiers tried, in order |
+| `engine` | What runs |
 |---|---|
-| `auto` | `apple` → `mlx` *(if available)* → `ollama` *(if available)* → `rules` |
-| `apple` | `apple` → `rules` |
-| `mlx` | `mlx` → `rules` |
-| `ollama` | `ollama` → `rules` |
+| `apple` *(default)* | Apple's on-device model, then `rules` |
+| `mlx` | the configured MLX model, then `rules` |
+| `ollama` | the configured Ollama model, then `rules` |
 | `rules` | `rules` only — no model is ever run, and no availability probe is taken |
 
-`auto` chains every semantic tier this machine actually has, rather than
-stopping at the first one. A tier hands over to the **next** tier — not
-straight to `rules` — when it is unavailable, errors, times out, emits
-malformed output, speaks an unknown contract version, **declines** (answers
-`unclassified`), answers **below `min_confidence`**, or names a **doctype
-outside the catalog**. A decline by one model does not bind another; that is
-the point of having several. The answer falls to `rules` only when no tier
-does better, and an unmatched `rules` answer is `unclassified` with zero
-confidence rather than a guess.
+Ending at the deterministic `rules` tier is **part of what each model engine
+is**, not a separate setting: there is no "MLX or nothing" mode, and `rules` is
+the no-model choice. Each engine runs its own tier and never another one — a
+machine with all three installed classifies exactly like one with only the
+engine you named.
 
-`rules` is the explicit "no LLM used" choice: nothing is probed and no helper
-process is spawned.
+A tier hands over to `rules` when it is unavailable (`apple` only — see below),
+declines with `unclassified`, answers below `min_confidence`, names a doctype
+outside the catalog, errors, times out, emits malformed output, or speaks an
+unknown contract version. An unmatched `rules` answer is `unclassified` with
+zero confidence rather than a guess.
 
-The chain is bounded. Each tier is attempted **at most once per document**,
-availability comes from each backend's **cached** probe (so an absent tier
-costs a lookup, not a helper launch, per document), and the whole chain
-honours the caller's cancellation — a cancelled `ingest` stops the chain
-instead of paying out the remaining tiers. Worst case under `auto`, on a
-machine with all three tiers installed and all three hanging, is one
-30 s (`apple`) + 2 min (`mlx`) + 2 min (`ollama`) = **4 min 30 s** for a
-single document.
+**There is no `auto`.** A `vault.yaml` that still says `engine: auto` is
+**rejected** with an error naming the four values, not silently read as
+something else.
 
-A named engine that is unavailable is an error naming the fix (e.g. `run
-kagaz model pull --engine mlx`) — that is the only classifier condition that
-fails rather than degrades. A *runtime* failure of a named engine still falls
-back to `rules` rather than failing the whole `ingest`.
+`apple` is the default because it needs nothing downloaded and nothing running:
+where Apple's on-device model is absent (anything before macOS 26) the `rules`
+tier answers, so the default works everywhere. `mlx` and `ollama` are installed
+on purpose, so naming one that is not available is an **error naming the fix**
+(e.g. `run kagaz model pull --engine mlx`) rather than a quiet downgrade —
+asking for MLX and getting keyword matching would misreport provenance in every
+sidecar written afterwards. A *runtime* failure of an available tier still
+falls back to `rules` rather than failing the whole `ingest`.
 
-`kagaz doctor` prints the order the chain will actually try (`classify:chain`)
-alongside each tier's readiness, so the order comes from the CLI rather than
-being recomputed by any client.
+The catalog's regex **field extraction is unconditional**: it runs over every
+accepted answer whichever tier produced it, so `invoice_number`, `amount` and
+dates are in the sidecar regardless of engine.
+
+`kagaz doctor` prints the order the chain will actually try (`classify:chain`,
+e.g. `apple: apple -> rules`) alongside each tier's readiness and a
+machine-readable `reason` for any tier that is not ready — see
+[commands.md](commands.md#kagaz-doctor) — so a client shows the order and
+decides what to offer without recomputing either.
 
 The accepted answer's tier is recorded in `Result.Engine` and lands in the
 sidecar's `classifier` field, so provenance names the tier that actually

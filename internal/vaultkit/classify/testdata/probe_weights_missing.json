@@ -1,0 +1,1 @@
+{ "contract": 1, "engine": "mlx", "available": false, "reason": "no weights for mlx-community/Qwen2.5-3B-Instruct-4bit at ~/.cache/kagaz/models; run: kagaz model pull", "reason_code": "weights_missing" }

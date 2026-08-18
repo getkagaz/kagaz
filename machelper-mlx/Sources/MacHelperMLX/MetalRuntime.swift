@@ -66,22 +66,32 @@ enum MetalRuntime {
     /// unreadable is exactly the situation that made the old probe lie, and
     /// only an actual load rules it out.
     static func unavailableReason() -> String? {
+        unavailable()?.reason
+    }
+
+    /// The prose reason and its machine-readable code, or `nil` when MLX can
+    /// run. The code exists so a client can tell "no shader library" (rebuild)
+    /// from "no weights" (download) without reading the sentence.
+    static func unavailable() -> (reason: String, code: ProbeReasonCode)? {
         guard let device = MTLCreateSystemDefaultDevice() else {
-            return "no Metal device is available; MLX needs an Apple silicon GPU"
+            return ("no Metal device is available; MLX needs an Apple silicon GPU", .noMetalDevice)
         }
         guard let url = shaderLibraryURL() else {
             let location = binaryDirectories().first?.path ?? "the directory holding this binary"
-            return """
+            return ("""
                 MLX shader library not found: no \(colocatedLibraryName) beside the helper at \
                 \(location), and no \(bundleName).bundle. SwiftPM cannot compile MLX's Metal \
                 kernels, so `swift build` alone does not produce it; build it with \
                 Scripts/build-metallib.sh and install it next to kagaz-machelper-mlx
-                """
+                """, .shaderLibraryMissing)
         }
         do {
             _ = try device.makeLibrary(URL: url)
         } catch {
-            return "MLX shader library at \(url.path) could not be loaded: \(error.localizedDescription)"
+            return (
+                "MLX shader library at \(url.path) could not be loaded: \(error.localizedDescription)",
+                .shaderLibraryMissing
+            )
         }
         return nil
     }

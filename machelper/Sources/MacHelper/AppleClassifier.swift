@@ -42,20 +42,24 @@ enum AppleClassifier {
         if #available(macOS 26, *) {
             switch SystemLanguageModel.default.availability {
             case .available:
-                return ProbeResponse(contract: contractVersion, engine: "apple", available: true, reason: nil)
+                return ProbeResponse(
+                    contract: contractVersion, engine: "apple", available: true, reason: nil, reasonCode: nil)
             case .unavailable(let reason):
                 return ProbeResponse(
                     contract: contractVersion,
                     engine: "apple",
                     available: false,
-                    reason: describe(reason)
+                    reason: describe(reason),
+                    // The OS has the model; this Mac cannot use it right now.
+                    reasonCode: .modelUnavailable
                 )
             @unknown default:
                 return ProbeResponse(
                     contract: contractVersion,
                     engine: "apple",
                     available: false,
-                    reason: "unknown_availability"
+                    reason: "unknown_availability",
+                    reasonCode: .unknown
                 )
             }
         }
@@ -63,14 +67,16 @@ enum AppleClassifier {
             contract: contractVersion,
             engine: "apple",
             available: false,
-            reason: "requires macOS 26 or newer"
+            reason: "requires macOS 26 or newer",
+            reasonCode: .osUnsupported
         )
         #else
         return ProbeResponse(
             contract: contractVersion,
             engine: "apple",
             available: false,
-            reason: "built without the FoundationModels framework"
+            reason: "built without the FoundationModels framework",
+            reasonCode: .osUnsupported
         )
         #endif
     }

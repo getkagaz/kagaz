@@ -82,15 +82,26 @@ enum ModelCache {
     static func check(repo: String) -> ProbeResponse {
         do {
             _ = try resolve(repo: repo)
-            return ProbeResponse(contract: contractVersion, engine: "mlx", available: true, reason: nil)
+            return ProbeResponse(
+                contract: contractVersion, engine: "mlx", available: true, reason: nil, reasonCode: nil)
         } catch let error as HelperError {
-            return ProbeResponse(contract: contractVersion, engine: "mlx", available: false, reason: error.message)
+            // Every failure `resolve` throws is about the weight directory --
+            // absent, or missing config.json / .safetensors after a part-done
+            // pull -- and `kagaz model pull` is the fix for all of them.
+            return ProbeResponse(
+                contract: contractVersion,
+                engine: "mlx",
+                available: false,
+                reason: error.message,
+                reasonCode: error.code == .modelNotFound ? .weightsMissing : .unknown
+            )
         } catch {
             return ProbeResponse(
                 contract: contractVersion,
                 engine: "mlx",
                 available: false,
-                reason: error.localizedDescription
+                reason: error.localizedDescription,
+                reasonCode: .unknown
             )
         }
     }

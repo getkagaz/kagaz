@@ -101,8 +101,14 @@ enum MLXClassifier {
     ///
     /// No model is loaded, so this stays in the millisecond range.
     static func probe(repo: String) -> ProbeResponse {
-        if let reason = MetalRuntime.unavailableReason() {
-            return ProbeResponse(contract: contractVersion, engine: "mlx", available: false, reason: reason)
+        if let unavailable = MetalRuntime.unavailable() {
+            return ProbeResponse(
+                contract: contractVersion,
+                engine: "mlx",
+                available: false,
+                reason: unavailable.reason,
+                reasonCode: unavailable.code
+            )
         }
         return ModelCache.check(repo: repo)
     }

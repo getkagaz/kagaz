@@ -65,12 +65,45 @@ struct ClassifyResponse: Encodable {
 }
 
 /// `--probe` payload. Always exits 0 when the probe itself ran; `available`
-/// carries the answer and `reason` explains a `false`.
+/// carries the answer, `reason` explains a `false` in prose, and `reasonCode`
+/// says *which* precondition is unmet in a stable machine-readable form.
+///
+/// The two are not redundant. MLX has three independent preconditions -- this
+/// binary, its Metal shader library, and the weights -- and only the weights
+/// are fixed by `kagaz model pull`. In prose they are three similar sentences,
+/// so a client offering the download has to be told which one, and being told
+/// by a sentence it greps is how that breaks the next time the sentence is
+/// improved. `reason` is written for a person and may be reworded freely;
+/// `reason_code` is an API and its values do not change.
 struct ProbeResponse: Encodable {
     let contract: Int
     let engine: String
     let available: Bool
     let reason: String?
+    var reasonCode: ProbeReasonCode?
+
+    enum CodingKeys: String, CodingKey {
+        case contract, engine, available, reason
+        case reasonCode = "reason_code"
+    }
+}
+
+/// The vocabulary of `reason_code`. It is shared with the Go core's Reason*
+/// constants (internal/vaultkit/classify/helper.go) and with the Settings
+/// window, which keys its offer of a model download off `weightsMissing` and
+/// nothing else.
+enum ProbeReasonCode: String, Encodable {
+    /// The weights are absent, or the download is incomplete. The one code
+    /// `kagaz model pull` fixes.
+    case weightsMissing = "weights_missing"
+    /// The compiled Metal shader library is not beside the helper. It is built
+    /// (Scripts/build-metallib.sh), never downloaded.
+    case shaderLibraryMissing = "shader_library_missing"
+    /// No Metal device: MLX needs an Apple silicon GPU, and nothing installs
+    /// one.
+    case noMetalDevice = "no_metal_device"
+    /// Unavailable for a reason this helper could not classify.
+    case unknown = "unknown"
 }
 
 /// Failure payload. Written to stdout (not stderr) so the Go core can decode a

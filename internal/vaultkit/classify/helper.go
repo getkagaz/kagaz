@@ -143,9 +143,13 @@ type helperResponse struct {
 	Confidence float64           `json:"confidence"`
 	Fields     map[string]string `json:"fields"`
 
-	// Available and Reason are only populated by --probe.
-	Available *bool  `json:"available"`
-	Reason    string `json:"reason"`
+	// Available, Reason and ReasonCode are only populated by --probe.
+	// Reason is prose for a human; ReasonCode is the stable vocabulary the
+	// Settings window keys its actions off, so no client ever has to
+	// pattern-match an English sentence to know WHICH precondition failed.
+	Available  *bool  `json:"available"`
+	Reason     string `json:"reason"`
+	ReasonCode string `json:"reason_code"`
 
 	// Error is a machine-readable code, Message its human text.
 	Error   string `json:"error"`
@@ -225,27 +229,88 @@ func decodeClassifyResponse(binary, engine string, data []byte) (Result, error) 
 	}, nil
 }
 
+// Reason codes: WHICH precondition a classifier tier is missing, in a stable
+// machine-readable form.
+//
+// `kagaz doctor` reports one alongside the prose detail on every unavailable
+// classifier check. The prose is for a human and is reworded freely; these
+// values are an API and are not, because a client that has to grep an English
+// sentence to decide whether to offer a 1.6 GB download breaks the first time
+// somebody improves the wording.
+//
+// The distinction that matters most is ReasonWeightsMissing versus
+// ReasonHelperMissing / ReasonShaderLibraryMissing: only the first is fixed by
+// `kagaz model pull`. Offering a download for either of the others would make a
+// user wait minutes for nothing to change.
+const (
+	// ReasonHelperMissing: the helper binary is not installed or not found.
+	ReasonHelperMissing = "helper_missing"
+	// ReasonWeightsMissing: the helper is installed and working, but the model
+	// weights are absent or the download is incomplete. THE one code that
+	// `kagaz model pull` fixes.
+	ReasonWeightsMissing = "weights_missing"
+	// ReasonShaderLibraryMissing: the MLX helper is installed but its compiled
+	// Metal shader library is not beside it. Rebuilt, never downloaded.
+	ReasonShaderLibraryMissing = "shader_library_missing"
+	// ReasonNoMetalDevice: no Apple silicon GPU for MLX to run on.
+	ReasonNoMetalDevice = "no_metal_device"
+	// ReasonModelNotConfigured: classify.model is empty.
+	ReasonModelNotConfigured = "model_not_configured"
+	// ReasonOSUnsupported: this macOS cannot host the tier at all -- Apple
+	// Foundation Models need macOS 26, and no download changes that.
+	ReasonOSUnsupported = "os_unsupported"
+	// ReasonModelUnavailable: the OS supports the tier but the model is not
+	// usable right now (still downloading, device ineligible, turned off).
+	ReasonModelUnavailable = "model_unavailable"
+	// ReasonDaemonUnreachable: no Ollama server answered at the endpoint.
+	ReasonDaemonUnreachable = "daemon_unreachable"
+	// ReasonModelNotPulled: the Ollama daemon answers but has not pulled the
+	// configured model.
+	ReasonModelNotPulled = "model_not_pulled"
+	// ReasonProbeTimeout: the probe did not answer in time. Not cached, and
+	// usually a cold start rather than a missing anything.
+	ReasonProbeTimeout = "probe_timeout"
+	// ReasonContractMismatch: the helper speaks a different contract version.
+	ReasonContractMismatch = "contract_mismatch"
+	// ReasonUnreadableProbe: the probe reply could not be parsed.
+	ReasonUnreadableProbe = "unreadable_probe"
+	// ReasonUnknown: unavailable for a reason the helper did not classify.
+	ReasonUnknown = "unknown"
+)
+
 // decodeProbeResponse reads a --probe reply. A probe that cannot be understood
 // counts as unavailable: an optional backend is never allowed to fail an
 // operation just because its probe was strange.
-func decodeProbeResponse(data []byte) (available bool, reason string) {
+func decodeProbeResponse(data []byte) (available bool, reason, code string) {
 	var resp helperResponse
 	if err := json.Unmarshal(bytes.TrimSpace(data), &resp); err != nil {
-		return false, "helper probe returned unreadable JSON"
+		return false, "helper probe returned unreadable JSON", ReasonUnreadableProbe
 	}
 	if resp.Error != "" {
-		return false, describeHelperError(resp.Error, resp.Message)
+		return false, describeHelperError(resp.Error, resp.Message), reasonCodeOr(resp.ReasonCode, ReasonUnknown)
 	}
 	if resp.Contract != Contract {
-		return false, "helper speaks contract " + strconv.Itoa(resp.Contract) + ", this build speaks " + strconv.Itoa(Contract)
+		return false,
+			"helper speaks contract " + strconv.Itoa(resp.Contract) + ", this build speaks " + strconv.Itoa(Contract),
+			ReasonContractMismatch
 	}
 	if resp.Available == nil || !*resp.Available {
 		if r := strings.TrimSpace(resp.Reason); r != "" {
-			return false, r
+			return false, r, reasonCodeOr(resp.ReasonCode, ReasonUnknown)
 		}
-		return false, "helper reported the backend as unavailable"
+		return false, "helper reported the backend as unavailable", reasonCodeOr(resp.ReasonCode, ReasonUnknown)
 	}
-	return true, ""
+	return true, "", ""
+}
+
+// reasonCodeOr returns the helper's own code, or a fallback when it did not
+// send one -- an older helper, built before the field existed, simply reports
+// "unknown" rather than making the caller guess from the prose.
+func reasonCodeOr(code, fallback string) string {
+	if c := strings.TrimSpace(code); c != "" {
+		return c
+	}
+	return fallback
 }
 
 // describeHelperError renders a structured helper error as "message (code)".

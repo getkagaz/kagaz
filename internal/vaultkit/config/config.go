@@ -202,15 +202,25 @@ type DocTypeMatch struct {
 }
 
 // Valid classifier engines.
+//
+// Each names the tier that reads the document, and every model tier ends at
+// the deterministic rules tier -- falling back is part of an engine's
+// definition, not a separate setting. EngineRules is the no-model choice.
+// There is deliberately no "auto": a chain the user cannot see is a chain they
+// cannot reason about, and four self-describing modes say the same thing.
 const (
-	EngineAuto   = "auto"
 	EngineApple  = "apple"
 	EngineMLX    = "mlx"
 	EngineOllama = "ollama"
 	EngineRules  = "rules"
 )
 
-var validEngines = []string{EngineAuto, EngineApple, EngineMLX, EngineOllama, EngineRules}
+var validEngines = []string{EngineApple, EngineMLX, EngineOllama, EngineRules}
+
+// EngineDefault is what an omitted classify.engine means: Apple's on-device
+// model where this machine has it, and the rules tier otherwise. It needs
+// nothing downloaded and nothing running, which is what makes it the default.
+const EngineDefault = EngineApple
 
 // DefaultMLXModel is the pinned MLX weights repository. It is a text LLM on
 // purpose: vision-language loaders take a different MLX code path.
@@ -394,7 +404,7 @@ func (c *Config) applyDefaults() {
 	}
 
 	if c.Classify.Engine == "" {
-		c.Classify.Engine = EngineAuto
+		c.Classify.Engine = EngineDefault
 	}
 	if c.Classify.Model == "" {
 		c.Classify.Model = DefaultMLXModel
@@ -543,6 +553,16 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Classify.Engine == "auto" {
+		// "auto" was a real value in an earlier build and is now gone: it
+		// chose a tier without saying so. It is REJECTED rather than quietly
+		// read as "apple", because silently rewriting what a config file says
+		// is exactly what this engine list exists to stop.
+		return fmt.Errorf(
+			"classify.engine \"auto\" no longer exists: use %q (Apple's on-device model, then rules -- what auto did), "+
+				"or %q, %q, or %q (rules only, no model)",
+			EngineApple, EngineMLX, EngineOllama, EngineRules)
+	}
 	if !contains(validEngines, c.Classify.Engine) {
 		return fmt.Errorf("classify.engine %q must be one of %s", c.Classify.Engine, strings.Join(validEngines, ", "))
 	}

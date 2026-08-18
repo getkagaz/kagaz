@@ -209,6 +209,33 @@ Exits non-zero only for problems that actually break core function — a
 missing optional tool degrades a feature and is reported, not treated as
 fatal (Global Constraint 9).
 
+The `classify:chain` check reports the tier order that will actually run,
+e.g. `apple: apple -> rules`, so a client shows the order instead of
+recomputing it.
+
+Each classifier check carries a `reason` alongside its prose `detail` in
+`--json`, naming **which** precondition is unmet in a stable vocabulary.
+`detail` is written for a person and is reworded whenever it reads better;
+`reason` is an API and its values do not change:
+
+| `reason` | Meaning | Fixed by |
+|---|---|---|
+| `weights_missing` | model weights absent or the download is incomplete | `kagaz model pull` |
+| `helper_missing` | the helper binary is not installed or not found | building/installing the helper |
+| `shader_library_missing` | the MLX Metal shader library is not beside the helper | `Scripts/build-metallib.sh` — never a download |
+| `no_metal_device` | no Apple silicon GPU for MLX | nothing |
+| `os_unsupported` | this macOS cannot host the tier (Apple's model needs macOS 26) | nothing |
+| `model_unavailable` | the OS supports it, but the model is not usable right now | waiting, or enabling it in System Settings |
+| `model_not_configured` | `classify.model` is empty | setting it |
+| `daemon_unreachable` | no Ollama server answered at the endpoint | starting the daemon |
+| `model_not_pulled` | the daemon answers but has not pulled the model | `ollama pull <model>` |
+| `probe_timeout`, `contract_mismatch`, `unreadable_probe`, `unknown` | the probe did not give a usable answer | see `detail` |
+
+The distinction that earns the field: MLX has three independent
+preconditions and only `weights_missing` is fixed by a download. A client
+that decided from the prose would offer a 1.6 GB pull for a missing helper
+binary — minutes of waiting that change nothing.
+
 ## `kagaz watch`
 
 Watches the vault (via `fsnotify`, debounced) for new or changed files and

@@ -83,7 +83,7 @@ func newModelPullCommand(rt *Runtime) *cobra.Command {
 				}
 				return rt.Emit(&Response{Command: "model pull", Status: StatusOK, Payload: payload, Human: humanModelPull})
 
-			case "", config.EngineMLX, config.EngineAuto:
+			case "", config.EngineMLX:
 				client := &models.Client{}
 				res, err := client.Pull(cmd.Context(), models.Options{
 					Repo:     model,

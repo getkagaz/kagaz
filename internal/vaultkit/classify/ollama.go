@@ -84,10 +84,11 @@ type Ollama struct {
 	client *http.Client
 
 	// probeMu guards the cached Available() answer.
-	probeMu  sync.Mutex
-	probedAt time.Time
-	probeOK  bool
-	probeWhy string
+	probeMu   sync.Mutex
+	probedAt  time.Time
+	probeOK   bool
+	probeWhy  string
+	probeCode string
 }
 
 // Name identifies the backend. It matches config.EngineOllama.
@@ -105,67 +106,79 @@ func (o *Ollama) engine() string { return config.EngineOllama + ":" + o.Model }
 // Without this check the forced-engine guard passes, every /api/generate 404s,
 // and every document silently degrades to rules with no error and no hint.
 func (o *Ollama) Available() bool {
-	ok, _ := o.availability()
+	ok, _, _ := o.availability()
 	return ok
 }
 
-// availability returns the cached probe result and the reason when unavailable.
-func (o *Ollama) availability() (bool, string) {
+// availability returns the cached probe result, the prose reason when
+// unavailable, and the machine-readable code for it.
+func (o *Ollama) availability() (bool, string, string) {
 	if o.Model == "" {
-		return false, "no model configured (classify.model)"
+		return false, "no model configured (classify.model)", ReasonModelNotConfigured
 	}
 	base, err := o.baseURL()
 	if err != nil {
-		return false, err.Error()
+		return false, err.Error(), ReasonDaemonUnreachable
 	}
 
 	o.probeMu.Lock()
 	defer o.probeMu.Unlock()
 	if !o.probedAt.IsZero() && time.Since(o.probedAt) < ollamaProbeTTL {
-		return o.probeOK, o.probeWhy
+		return o.probeOK, o.probeWhy, o.probeCode
 	}
-	o.probeOK, o.probeWhy = o.probe(base)
+	o.probeOK, o.probeWhy, o.probeCode = o.probe(base)
 	o.probedAt = time.Now()
-	return o.probeOK, o.probeWhy
+	return o.probeOK, o.probeWhy, o.probeCode
+}
+
+// reason names WHICH precondition is unmet, from the vocabulary in helper.go.
+// Ollama's weights are the daemon's, never Kagaz's, so it never reports
+// ReasonWeightsMissing: `ollama pull` is the fix, not `kagaz model pull`.
+func (o *Ollama) reason() string {
+	ok, _, code := o.availability()
+	if ok {
+		return ""
+	}
+	return code
 }
 
 // probe performs GET /api/tags and checks the configured model is listed. The
 // caller holds probeMu.
-func (o *Ollama) probe(base string) (bool, string) {
+func (o *Ollama) probe(base string) (bool, string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), ollamaProbeTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/tags", nil)
 	if err != nil {
-		return false, err.Error()
+		return false, err.Error(), ReasonDaemonUnreachable
 	}
 	resp, err := o.httpClient().Do(req)
 	if err != nil {
-		return false, "no Ollama server responding at " + o.Endpoint
+		return false, "no Ollama server responding at " + o.Endpoint, ReasonDaemonUnreachable
 	}
 	defer resp.Body.Close()
 
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return false, "no Ollama server responding at " + o.Endpoint
+		return false, "no Ollama server responding at " + o.Endpoint, ReasonDaemonUnreachable
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, "Ollama at " + o.Endpoint + " answered " + resp.Status
+		return false, "Ollama at " + o.Endpoint + " answered " + resp.Status, ReasonDaemonUnreachable
 	}
 
 	var tags ollamaTags
 	if err := json.Unmarshal(payload, &tags); err != nil {
-		return false, "Ollama at " + o.Endpoint + " returned an unreadable model list"
+		return false, "Ollama at " + o.Endpoint + " returned an unreadable model list", ReasonDaemonUnreachable
 	}
 	if !tags.has(o.Model) {
-		return false, "model " + o.Model + " is not pulled; run `ollama pull " + o.Model + "`"
+		return false, "model " + o.Model + " is not pulled; run `ollama pull " + o.Model + "`", ReasonModelNotPulled
 	}
-	return true, ""
+	return true, "", ""
 }
 
 // detail explains the backend's state for `kagaz doctor`.
 func (o *Ollama) detail() string {
-	ok, why := o.availability()
+	ok, why, _ := o.availability()
 	if ok {
 		return o.Endpoint + " (" + o.Model + ")"
 	}
