@@ -155,7 +155,7 @@ func TestClassifyErrorsUseTheSharedSentinel(t *testing.T) {
 	if _, err := (&Apple{locate: missing}).Classify(context.Background(), Request{}); !errors.Is(err, ocr.ErrNoHelper) {
 		t.Fatalf("apple error = %v, want ocr.ErrNoHelper", err)
 	}
-	if _, err := (&MLX{Model: "m", locate: missing}).Classify(context.Background(), Request{}); !errors.Is(err, ocr.ErrNoHelper) {
+	if _, err := (&MLX{locate: missing}).Classify(context.Background(), Request{}); !errors.Is(err, ocr.ErrNoHelper) {
 		t.Fatalf("mlx error = %v, want ocr.ErrNoHelper", err)
 	}
 }

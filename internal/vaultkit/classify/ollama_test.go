@@ -302,10 +302,11 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// TestOllamaUnavailableWhenModelNotPulled covers the single-config-key trap:
-// classify.model is shared with the MLX engine and defaults to an MLX repo
-// path, so `engine: ollama` with no other setting names a model Ollama has
-// never heard of. A server answering /api/tags is not enough.
+// TestOllamaUnavailableWhenModelNotPulled covers a stale or mistyped
+// classify.model: a name this daemon has never pulled. A server answering
+// /api/tags is not enough. The value used here is the repo path that this key
+// once defaulted to, which config now rejects outright -- the tier must still
+// refuse it rather than 404 per document if one reaches it another way.
 func TestOllamaUnavailableWhenModelNotPulled(t *testing.T) {
 	var generateHits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

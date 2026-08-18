@@ -116,9 +116,20 @@ type OCROllama struct {
 }
 
 // Classify selects and tunes the semantic classifier backend.
+//
+// Model and Endpoint belong to the ollama engine alone. The mlx engine is
+// pinned to DefaultMLXModel and reads neither: one key naming a model for two
+// engines meant the shipped default was a Hugging Face repo path handed to a
+// daemon that has never heard of it. Model has no default for the same reason
+// a guess would be wrong -- an Ollama model the user did not choose would be
+// named in doctor output and in every sidecar's provenance -- so an empty
+// Model makes the ollama tier report itself unavailable
+// (classify.ReasonModelNotConfigured) rather than pick one.
 type Classify struct {
-	Engine        string  `yaml:"engine"`
-	Model         string  `yaml:"model"`
+	Engine string `yaml:"engine"`
+	// Model is an Ollama model name ("qwen2.5:3b"), never a repo path.
+	Model string `yaml:"model"`
+	// Endpoint is the Ollama daemon; requireLocalhost keeps it on loopback.
 	Endpoint      string  `yaml:"endpoint"`
 	MinConfidence float64 `yaml:"min_confidence"`
 }
@@ -406,9 +417,6 @@ func (c *Config) applyDefaults() {
 	if c.Classify.Engine == "" {
 		c.Classify.Engine = EngineDefault
 	}
-	if c.Classify.Model == "" {
-		c.Classify.Model = DefaultMLXModel
-	}
 	if c.Classify.Endpoint == "" {
 		c.Classify.Endpoint = "http://localhost:11434"
 	}
@@ -568,6 +576,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Classify.MinConfidence < 0 || c.Classify.MinConfidence > 1 {
 		return fmt.Errorf("classify.min_confidence must be 0-1, got %v", c.Classify.MinConfidence)
+	}
+	if strings.Contains(c.Classify.Model, "/") {
+		// A slash separates the two naming schemes cleanly: Ollama models are
+		// name:tag, Hugging Face repos are org/name. The value that lands here
+		// is almost always the old shipped default, left behind by a vault
+		// written when this key fed the mlx engine too -- and silently reading
+		// it as an Ollama model name would make every classification 404.
+		return fmt.Errorf(
+			"classify.model %q looks like a Hugging Face repo path, not an Ollama model name: "+
+				"classify.model now configures the %q engine only, and %q is pinned to %s with no key to change it. "+
+				"Remove classify.model, or set an Ollama model name such as \"qwen2.5:3b\"",
+			c.Classify.Model, EngineOllama, EngineMLX, DefaultMLXModel)
 	}
 	if err := requireLocalhost(c.Classify.Endpoint); err != nil {
 		return fmt.Errorf("classify.endpoint: %w", err)

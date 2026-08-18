@@ -64,7 +64,7 @@ ocr:
 
 classify:
   engine: rules
-  model: "mlx-community/Qwen2.5-3B-Instruct-4bit"
+  model: ""
   endpoint: "http://localhost:11434"
   min_confidence: 0.5
 

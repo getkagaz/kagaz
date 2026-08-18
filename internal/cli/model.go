@@ -61,10 +61,21 @@ func newModelPullCommand(rt *Runtime) *cobra.Command {
 			if len(args) == 1 {
 				model = args[0]
 			}
+			// The default repo is per-engine because the two engines no longer
+			// share a config key: mlx is pinned to config.DefaultMLXModel (the
+			// repo this build has a revision pin and shaders for), and ollama
+			// has only classify.model, which has no default because guessing a
+			// model the user never chose is worse than saying so.
 			if model == "" {
-				if cfg, err := rt.Config(); err == nil && cfg.Classify.Model != "" {
-					model = cfg.Classify.Model
-				} else {
+				switch engine {
+				case config.EngineOllama:
+					if cfg, err := rt.Config(); err == nil {
+						model = cfg.Classify.Model
+					}
+					if model == "" {
+						return fmt.Errorf("model pull --engine ollama: name a model (`kagaz model pull --engine ollama qwen2.5:3b`) or set classify.model in vault.yaml")
+					}
+				default:
 					model = config.DefaultMLXModel
 				}
 			}

@@ -50,6 +50,7 @@ func NewRootCommand(rt *Runtime) *cobra.Command {
 	root.AddCommand(
 		newInitCommand(rt),
 		newFindCommand(rt),
+		newDoctypesCommand(rt),
 		newIngestCommand(rt),
 		newMoveCommand(rt),
 		newTagCommand(rt),

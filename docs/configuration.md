@@ -128,17 +128,28 @@ vocabulary. Anything outside all of these is a `kagaz lint` finding.
 | Field | Default | Meaning |
 |---|---|---|
 | `engine` | `"apple"` | `apple` \| `mlx` \| `ollama` \| `rules`. |
-| `model` | `"mlx-community/Qwen2.5-3B-Instruct-4bit"` | Model id for `mlx`/`ollama`. |
-| `endpoint` | `"http://localhost:11434"` | Must resolve to localhost. |
+| `model` | *(unset)* | The `ollama` engine's model name, e.g. `qwen2.5:3b`. Not read by `mlx`. A value containing `/` is rejected as a Hugging Face repo path. |
+| `endpoint` | `"http://localhost:11434"` | The `ollama` engine's daemon. Must resolve to localhost. |
 | `min_confidence` | `0.5` | 0–1. Below this the tier has declined and the `rules` tier answers. |
+
+`model` and `endpoint` belong to `ollama` only. The `mlx` engine always runs
+`mlx-community/Qwen2.5-3B-Instruct-4bit` — the repo `kagaz model pull` fetches,
+the one this build pins a revision for and compiled its Metal shaders against —
+and there is no key to change it. `classify.model` has no default because a
+model you did not choose would be named in `doctor` output and in every
+sidecar's provenance; leaving it unset makes the `ollama` tier report itself
+unavailable with reason `model_not_configured`. A `vault.yaml` whose
+`classify.model` still holds the old shared default (any value containing `/`)
+is **rejected** at parse time rather than handed to Ollama, which would 404 on
+every document.
 
 ### The four engines
 
 | `engine` | What runs |
 |---|---|
 | `apple` *(default)* | Apple's on-device model, then `rules` |
-| `mlx` | the configured MLX model, then `rules` |
-| `ollama` | the configured Ollama model, then `rules` |
+| `mlx` | the pinned MLX model, then `rules` |
+| `ollama` | the `classify.model` Ollama model, then `rules` |
 | `rules` | `rules` only — no model is ever run, and no availability probe is taken |
 
 Ending at the deterministic `rules` tier is **part of what each model engine

@@ -17,12 +17,17 @@ const mlxClassifyTimeout = 2 * time.Minute
 // same versioned contract as the Apple backend but is a separate binary and
 // needs weights on disk, fetched by `kagaz model pull --engine mlx`.
 //
+// The weights are config.DefaultMLXModel and nothing else -- there is no field
+// and no config key to change them. That repo is what `kagaz model pull`
+// fetches, what models.PinnedRevision has a build pin for, and what the
+// bundled Metal shader library was compiled against, so a second repo would be
+// a setting whose other values are all untested. classify.model configures the
+// Ollama tier only; it used to feed both, which handed Ollama a Hugging Face
+// path it had never heard of.
+//
 // MLX must not be copied after first use: it caches its probe behind a mutex.
 // Hold it by pointer, as Chain does.
 type MLX struct {
-	// Model is the Hugging Face repo path, e.g.
-	// "mlx-community/Qwen2.5-3B-Instruct-4bit".
-	Model string
 	// Timeout bounds one classification; zero means mlxClassifyTimeout.
 	Timeout time.Duration
 
@@ -41,7 +46,7 @@ func (m *MLX) Name() string { return config.EngineMLX }
 // basename, so "mlx-community/Qwen2.5-3B-Instruct-4bit" is reported as
 // "mlx:Qwen2.5-3B-Instruct-4bit".
 func (m *MLX) engine() string {
-	return config.EngineMLX + ":" + modelBasename(m.Model)
+	return config.EngineMLX + ":" + modelBasename(config.DefaultMLXModel)
 }
 
 // Available reports whether the MLX helper is installed and its weights are
@@ -59,7 +64,7 @@ func (m *MLX) detail() string {
 	ok, why, _ := m.probeCache.result(m.probe)
 	if ok {
 		path, _ := m.helperPath()
-		return path + " (" + m.Model + ")"
+		return path + " (" + config.DefaultMLXModel + ")"
 	}
 	return why
 }
@@ -104,14 +109,10 @@ func (m *MLX) probe() (bool, string, string, bool) {
 			MLXHelperBinary + " not found (set $" + MLXHelperPathEnv + " for a local build)",
 			ReasonHelperMissing, false
 	}
-	if m.Model == "" {
-		// A config fact, not a runtime one: safe to cache.
-		return false, "no model configured (classify.model)", ReasonModelNotConfigured, true
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
-	out, err := m.runner()(ctx, path, []string{"classify", "--backend", config.EngineMLX, "--model", m.Model, "--probe", "--json"}, "")
+	out, err := m.runner()(ctx, path, []string{"classify", "--backend", config.EngineMLX, "--model", config.DefaultMLXModel, "--probe", "--json"}, "")
 	if err != nil {
 		code := ReasonUnknown
 		if isTimeout(err) {
@@ -130,9 +131,6 @@ func (m *MLX) Classify(ctx context.Context, req Request) (Result, error) {
 	if !ok {
 		return Result{}, fmt.Errorf("%s: %w", MLXHelperBinary, ocr.ErrNoHelper)
 	}
-	if m.Model == "" {
-		return Result{}, fmt.Errorf("%s: no model configured (classify.model)", MLXHelperBinary)
-	}
 
 	timeout := m.Timeout
 	if timeout <= 0 {
@@ -141,7 +139,7 @@ func (m *MLX) Classify(ctx context.Context, req Request) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	args := []string{"classify", "--backend", config.EngineMLX, "--model", m.Model}
+	args := []string{"classify", "--backend", config.EngineMLX, "--model", config.DefaultMLXModel}
 	if spec := req.spec(); spec != "" {
 		args = append(args, "--doctypes", spec)
 	}

@@ -360,7 +360,7 @@ func TestChainForcedMLXUnavailableNamesModelPull(t *testing.T) {
 		MinConfidence: 0.5,
 		Catalog:       cat,
 		Rules:         &Rules{Catalog: cat},
-		MLX:           &MLX{Model: config.DefaultMLXModel, locate: missing},
+		MLX:           &MLX{locate: missing},
 	}
 	_, err := c.Classify(context.Background(), Request{Text: invoiceText})
 	if err == nil {
@@ -382,7 +382,6 @@ func TestChainForcedBackendMissingEntirely(t *testing.T) {
 func TestChainMLXEngineString(t *testing.T) {
 	cat := testCatalog(t)
 	m := &MLX{
-		Model:  config.DefaultMLXModel,
 		locate: func() (string, bool) { return "/fake/kagaz-machelper-mlx", true },
 		run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
 			if isProbe(args) {
@@ -447,16 +446,95 @@ func TestAppleUnavailableWithoutHelper(t *testing.T) {
 	}
 }
 
-func TestMLXWithoutModel(t *testing.T) {
-	m := &MLX{locate: func() (string, bool) { return "/fake/kagaz-machelper-mlx", true }}
-	if m.Available() {
-		t.Fatal("Available() = true with no model configured")
+// TestMLXIgnoresClassifyModel is the regression guard for the change that
+// split the two engines' settings: classify.model is Ollama's, and the MLX
+// tier must reach the helper with the pinned repo no matter what a vault says.
+// It asserts on the --model argument actually handed to the helper, for both
+// the probe and the classification, because an assertion on a struct field
+// would have passed in the version this replaced.
+func TestMLXIgnoresClassifyModel(t *testing.T) {
+	cfg, err := config.Parse([]byte("version: 1\nclassify:\n  engine: mlx\n  model: \"not-a-real-model:9000\"\n"))
+	if err != nil {
+		t.Fatalf("config.Parse: %v", err)
 	}
-	if !contains(m.detail(), "classify.model") {
-		t.Errorf("detail() = %q, want it to name the config key", m.detail())
+	cat := testCatalog(t)
+	c := New(cfg, cat)
+
+	var got []string
+	c.MLX.locate = func() (string, bool) { return "/fake/kagaz-machelper-mlx", true }
+	c.MLX.run = func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+		for i, a := range args {
+			if a == "--model" && i+1 < len(args) {
+				got = append(got, args[i+1])
+			}
+		}
+		if isProbe(args) {
+			return fixture(t, "probe_available.json"), nil
+		}
+		return fixture(t, "classify_mlx_payslip.json"), nil
 	}
-	if _, err := m.Classify(context.Background(), Request{Text: invoiceText}); err == nil {
-		t.Fatal("Classify should fail without a model")
+
+	res, err := c.Classify(context.Background(), Request{Text: "Payslip\nNet Pay: 1234.00\n"})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("--model seen %d times (%v), want once for the probe and once for the run", len(got), got)
+	}
+	for _, m := range got {
+		if m != config.DefaultMLXModel {
+			t.Errorf("helper --model = %q, want the pinned %q", m, config.DefaultMLXModel)
+		}
+	}
+	if res.Engine != config.EngineMLX+":"+modelBasename(config.DefaultMLXModel) {
+		t.Errorf("Result.Engine = %q, want the pinned model's basename", res.Engine)
+	}
+	if !contains(c.MLX.detail(), config.DefaultMLXModel) {
+		t.Errorf("detail() = %q, want it to name the pinned model", c.MLX.detail())
+	}
+}
+
+// TestMLXPinnedWithoutAnyClassifyBlock: a vault.yaml with no classify: key at
+// all must still produce a pinned MLX tier, not one with an empty model.
+func TestMLXPinnedWithoutAnyClassifyBlock(t *testing.T) {
+	cfg, err := config.Parse([]byte("version: 1\n"))
+	if err != nil {
+		t.Fatalf("config.Parse: %v", err)
+	}
+	if cfg.Classify.Model != "" {
+		t.Errorf("classify.model defaulted to %q; it must stay empty", cfg.Classify.Model)
+	}
+	c := New(cfg, testCatalog(t))
+	if c.MLX.engine() != config.EngineMLX+":"+modelBasename(config.DefaultMLXModel) {
+		t.Errorf("MLX engine = %q, want the pinned model", c.MLX.engine())
+	}
+}
+
+// TestOllamaTierReadsClassifyModel is the other half: the key that MLX stopped
+// reading must still reach Ollama, and an unset one must be reported through
+// the structured vocabulary rather than guessed at.
+func TestOllamaTierReadsClassifyModel(t *testing.T) {
+	cfg, err := config.Parse([]byte("version: 1\nclassify:\n  engine: ollama\n  model: \"qwen2.5:3b\"\n"))
+	if err != nil {
+		t.Fatalf("config.Parse: %v", err)
+	}
+	if got := New(cfg, testCatalog(t)).Ollama.Model; got != "qwen2.5:3b" {
+		t.Errorf("Ollama.Model = %q, want the configured qwen2.5:3b", got)
+	}
+
+	cfg, err = config.Parse([]byte("version: 1\nclassify:\n  engine: ollama\n"))
+	if err != nil {
+		t.Fatalf("config.Parse: %v", err)
+	}
+	o := New(cfg, testCatalog(t)).Ollama
+	if o.Model != "" {
+		t.Fatalf("Ollama.Model = %q, want empty: no model may be guessed", o.Model)
+	}
+	if o.Available() {
+		t.Error("Available() = true with no model configured")
+	}
+	if got := o.reason(); got != ReasonModelNotConfigured {
+		t.Errorf("reason() = %q, want %q", got, ReasonModelNotConfigured)
 	}
 }
 
@@ -474,8 +552,8 @@ func TestNewChainFromConfig(t *testing.T) {
 	if c.MinConfidence != 0.7 {
 		t.Errorf("MinConfidence = %v, want 0.7", c.MinConfidence)
 	}
-	if c.MLX == nil || c.MLX.Model != config.DefaultMLXModel {
-		t.Errorf("MLX model = %+v, want the configured default", c.MLX)
+	if c.MLX == nil || c.MLX.engine() != config.EngineMLX+":"+modelBasename(config.DefaultMLXModel) {
+		t.Errorf("MLX model = %+v, want the pinned default", c.MLX)
 	}
 	if c.Ollama == nil || c.Ollama.Endpoint != "http://localhost:11434" {
 		t.Errorf("Ollama endpoint = %+v, want the configured localhost default", c.Ollama)
@@ -693,7 +771,6 @@ func mlxWith(t *testing.T, classifyFixture string, classifyErr error) *MLX {
 	}
 	probe := fixture(t, "probe_available.json")
 	return &MLX{
-		Model:  config.DefaultMLXModel,
 		locate: found,
 		run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
 			if isProbe(args) {
@@ -780,7 +857,7 @@ func TestChainRulesEngineRunsNoModelAndTakesNoProbe(t *testing.T) {
 	}
 	c := chainAll(cat, config.EngineRules,
 		&Apple{locate: locateForbid, run: forbid},
-		&MLX{Model: config.DefaultMLXModel, locate: locateForbid, run: forbid}, o)
+		&MLX{locate: locateForbid, run: forbid}, o)
 
 	got, err := c.Classify(context.Background(), Request{Text: invoiceText})
 	if err != nil {
@@ -904,7 +981,7 @@ func TestNoEngineReachesAnotherModelTier(t *testing.T) {
 				appleCalls.Add(1)
 				return declined, nil
 			}}
-			m := &MLX{Model: config.DefaultMLXModel, locate: found,
+			m := &MLX{locate: found,
 				run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
 					if isProbe(args) {
 						return probe, nil
@@ -994,7 +1071,7 @@ func TestInstalledOnPurposeEnginesErrorWhenAbsent(t *testing.T) {
 		wantFix string
 	}{
 		config.EngineMLX: {
-			chain:   chainAll(cat, config.EngineMLX, nil, &MLX{Model: config.DefaultMLXModel, locate: missing}, nil),
+			chain:   chainAll(cat, config.EngineMLX, nil, &MLX{locate: missing}, nil),
 			wantFix: "kagaz model pull",
 		},
 		config.EngineOllama: {
@@ -1060,7 +1137,7 @@ func TestChainPlanReportsTheOrderItWillActuallyTry(t *testing.T) {
 
 	// An uninstalled mlx is the one condition doctor must show as a failure
 	// rather than an order.
-	bad := chainAll(cat, config.EngineMLX, nil, &MLX{Model: config.DefaultMLXModel, locate: missing}, nil)
+	bad := chainAll(cat, config.EngineMLX, nil, &MLX{locate: missing}, nil)
 	if p := bad.Plan(); p.Err == "" {
 		t.Errorf("Plan() = %+v, want an error for an uninstalled mlx", p)
 	}
@@ -1080,7 +1157,7 @@ func TestDescribeReportsWhichPreconditionIsUnmet(t *testing.T) {
 
 	mlxProbing := func(f string) *MLX {
 		out := fixture(t, f)
-		return &MLX{Model: config.DefaultMLXModel, locate: found,
+		return &MLX{locate: found,
 			run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
 				if isProbe(args) {
 					return out, nil
@@ -1096,7 +1173,7 @@ func TestDescribeReportsWhichPreconditionIsUnmet(t *testing.T) {
 	}{
 		{
 			name:  "the helper binary is not installed",
-			chain: chainAll(cat, config.EngineMLX, nil, &MLX{Model: config.DefaultMLXModel, locate: missing}, nil),
+			chain: chainAll(cat, config.EngineMLX, nil, &MLX{locate: missing}, nil),
 			want:  map[string]string{config.EngineMLX: ReasonHelperMissing},
 		},
 		{

@@ -177,9 +177,14 @@ classify:
   # and ollama are installed on purpose, so naming one that is not there is an
   # error naming the fix. `kagaz doctor` prints the order it will actually try.
   engine: apple
-  # Used by the mlx and ollama engines. The default is a pinned MLX text
-  # LLM (not a vision-language model) fetched by `kagaz model pull`.
-  model: "mlx-community/Qwen2.5-3B-Instruct-4bit"
+  # The ollama engine's model, and only its model -- an Ollama name:tag such
+  # as "qwen2.5:3b". There is no default: Kagaz will not name a model you did
+  # not choose, so an empty value makes the ollama engine report itself
+  # unavailable. A value containing "/" is rejected as a Hugging Face repo
+  # path. The mlx engine is pinned to mlx-community/Qwen2.5-3B-Instruct-4bit
+  # (the repo `kagaz model pull` fetches) and reads neither key.
+  model: ""
+  # The Ollama daemon, for this engine. Must resolve to localhost.
   endpoint: "http://localhost:11434"
   min_confidence: 0.5
 

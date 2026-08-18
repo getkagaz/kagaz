@@ -1226,3 +1226,344 @@ func TestIngestOverridesApplyToASelectedSubset(t *testing.T) {
 		t.Errorf("an unselected proposal was filed anyway: %v", err)
 	}
 }
+
+// doctypeEntries pulls the `doctypes` array out of a `kagaz doctypes --json`
+// envelope, keyed by name, so a test can assert about one entry without
+// indexing into a 45-element list by position.
+func doctypeEntries(t *testing.T, out string) (map[string]map[string]any, map[string]any) {
+	t.Helper()
+	obj := decode(t, out)
+	list, ok := obj["doctypes"].([]any)
+	if !ok {
+		t.Fatalf("no doctypes array in the envelope: %s", out)
+	}
+	byName := map[string]map[string]any{}
+	for _, e := range list {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("doctype entry is not an object: %s", out)
+		}
+		name, _ := entry["name"].(string)
+		if name == "" {
+			t.Fatalf("doctype entry has no name: %s", out)
+		}
+		if _, dup := byName[name]; dup {
+			t.Fatalf("doctype %q listed twice; the catalog resolved a duplicate: %s", name, out)
+		}
+		byName[name] = entry
+	}
+	return byName, obj
+}
+
+// vaultWithDoctypes initialises a plain (non-demo) vault and appends a
+// `doctypes:` block to its vault.yaml, returning the vault.yaml path.
+func vaultWithDoctypes(t *testing.T, block string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "v")
+	if out, errw, code := run(t, "init", "--root", root); code != ExitOK {
+		t.Fatalf("init exit %d\n%s\n%s", code, out, errw)
+	}
+	vault := filepath.Join(root, "vault.yaml")
+	f, err := os.OpenFile(vault, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\n" + block); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return vault
+}
+
+// TestDoctypesSplitsVaultDefinedFromBuiltIn pins the one field nothing else in
+// the CLI reports. The second entry is deliberately an override of a built-in
+// name: `invoice` resolves to the vault's definition, so reporting it as
+// `built-in` would name a definition this vault does not use.
+func TestDoctypesSplitsVaultDefinedFromBuiltIn(t *testing.T) {
+	vault := vaultWithDoctypes(t, "doctypes:\n"+
+		"  - name: warranty-card\n"+
+		"    category: personal\n"+
+		"    match:\n"+
+		"      keywords:\n"+
+		"        - warranty card\n"+
+		"  - name: invoice\n"+
+		"    category: financial\n"+
+		"    match:\n"+
+		"      keywords:\n"+
+		"        - tax invoice\n")
+
+	out, errw, code := run(t, "--vault", vault, "doctypes", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	entries, obj := doctypeEntries(t, out)
+
+	for _, name := range []string{"warranty-card", "invoice"} {
+		e, ok := entries[name]
+		if !ok {
+			t.Fatalf("%s is not in the catalog: %s", name, out)
+		}
+		if e["source"] != SourceVault {
+			t.Errorf("%s: source = %v, want %q", name, e["source"], SourceVault)
+		}
+	}
+	// A control: a built-in the vault says nothing about must not drift.
+	if e, ok := entries["passport"]; !ok {
+		t.Errorf("passport is missing from the catalog: %s", out)
+	} else if e["source"] != SourceBuiltIn {
+		t.Errorf("passport: source = %v, want %q", e["source"], SourceBuiltIn)
+	}
+
+	counts, _ := obj["counts"].(map[string]any)
+	if counts["vault"] != float64(2) {
+		t.Errorf("counts.vault = %v, want 2 (one addition, one override): %s", counts["vault"], out)
+	}
+	// The override replaced a built-in rather than adding a name: `invoice`
+	// appears once, not twice, and the total is the shipped set plus one.
+	if n := len(entries); float64(n) != counts["total"] {
+		t.Errorf("counts.total = %v but %d doctypes were listed", counts["total"], n)
+	}
+}
+
+// TestDoctypesCountsAgreeWithTheList: counts is the header a UI renders, and a
+// header that disagrees with the list beneath it is worse than no header.
+func TestDoctypesCountsAgreeWithTheList(t *testing.T) {
+	vault := initDemo(t)
+	out, errw, code := run(t, "--vault", vault, "doctypes", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	entries, obj := doctypeEntries(t, out)
+	counts, ok := obj["counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("no counts object: %s", out)
+	}
+	total, vaultN, builtIn := counts["total"], counts["vault"], counts["built_in"]
+	if total != float64(len(entries)) {
+		t.Errorf("counts.total = %v but %d doctypes were listed", total, len(entries))
+	}
+	if vaultN.(float64)+builtIn.(float64) != total.(float64) {
+		t.Errorf("counts.vault(%v) + counts.built_in(%v) != counts.total(%v)", vaultN, builtIn, total)
+	}
+	// The demo vault defines exactly one doctype of its own.
+	if vaultN != float64(1) {
+		t.Errorf("counts.vault = %v, want 1 (warranty-card): %s", vaultN, out)
+	}
+	if entries["warranty-card"]["source"] != SourceVault {
+		t.Errorf("warranty-card is not reported as vault-defined: %s", out)
+	}
+	// Every entry must declare one of exactly two sources.
+	for name, e := range entries {
+		switch e["source"] {
+		case SourceBuiltIn, SourceVault:
+		default:
+			t.Errorf("%s: source = %v, want %q or %q", name, e["source"], SourceBuiltIn, SourceVault)
+		}
+	}
+}
+
+// TestDoctypesJSONEnvelopeShape pins the contract the menu-bar app decodes:
+// the envelope keys, and the documented keys on every entry.
+func TestDoctypesJSONEnvelopeShape(t *testing.T) {
+	vault := initDemo(t)
+	out, errw, code := run(t, "--vault", vault, "doctypes", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	obj := decode(t, out)
+	if obj["command"] != "doctypes" {
+		t.Errorf("command = %v", obj["command"])
+	}
+	if obj["status"] != StatusOK {
+		t.Errorf("status = %v", obj["status"])
+	}
+	if obj["schema_version"] != float64(SchemaVersion) {
+		t.Errorf("schema_version = %v", obj["schema_version"])
+	}
+	entries, _ := doctypeEntries(t, out)
+	for name, e := range entries {
+		for _, key := range []string{"name", "category", "source", "filed"} {
+			if _, ok := e[key]; !ok {
+				t.Errorf("%s: entry is missing documented key %q", name, key)
+			}
+		}
+		if _, ok := e["filed"].(float64); !ok {
+			t.Errorf("%s: filed is %T, want a number", name, e["filed"])
+		}
+		if cat, _ := e["category"].(string); cat == "" {
+			t.Errorf("%s: category is empty; it must be the catalog's or absent", name)
+		}
+	}
+}
+
+// TestDoctypesTotalAgreesWithDoctor: doctor already tells a user "N doctypes
+// resolved". Two commands answering the same question with two numbers would
+// make one of them a lie, and there is no way for a user to tell which.
+func TestDoctypesTotalAgreesWithDoctor(t *testing.T) {
+	vault := initDemo(t)
+	out, errw, code := run(t, "--vault", vault, "doctypes", "--json")
+	if code != ExitOK {
+		t.Fatalf("doctypes exit %d: %s\n%s", code, out, errw)
+	}
+	total := decode(t, out)["counts"].(map[string]any)["total"].(float64)
+
+	docOut, _, _ := run(t, "--vault", vault, "doctor", "--json")
+	checks, ok := decode(t, docOut)["checks"].([]any)
+	if !ok {
+		t.Fatalf("doctor reported no checks: %s", docOut)
+	}
+	detail := ""
+	for _, c := range checks {
+		if c.(map[string]any)["name"] == "doctypes" {
+			detail, _ = c.(map[string]any)["detail"].(string)
+		}
+	}
+	if detail == "" {
+		t.Fatalf("doctor has no doctypes check: %s", docOut)
+	}
+	if want := fmt.Sprintf("%d doctypes resolved", int(total)); detail != want {
+		t.Errorf("doctor says %q, doctypes counts.total = %v", detail, total)
+	}
+}
+
+// TestDoctypesFiledCountsTheDocumentsThatAreThere builds a vault whose filed
+// counts are known before the code runs: four files, named by hand, four
+// expected numbers written as literals below. Nothing here is derived from the
+// counter under test, which is the whole point — a fixture generated by the
+// code it checks proves only that the code is consistent with itself.
+func TestDoctypesFiledCountsTheDocumentsThatAreThere(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "v")
+	if out, errw, code := run(t, "init", "--root", root); code != ExitOK {
+		t.Fatalf("init exit %d\n%s\n%s", code, out, errw)
+	}
+	vault := filepath.Join(root, "vault.yaml")
+
+	// {DocType}_{Names}_{Identifier}[_{Year}], filed under the layout the
+	// default structure declares for each category.
+	files := map[string][]string{
+		filepath.Join(root, "Financial", "_Shared", "FY 2026"): {
+			"Invoice_Shared_Acme-One_2026.pdf",
+			"Invoice_Shared_Acme-Two_2026.pdf",
+			"Receipt_Shared_Globex-One_2026.pdf",
+		},
+		filepath.Join(root, "Personal", "_Shared"): {
+			"Certificate_Shared_Course-One_2026.pdf",
+		},
+	}
+	for dir, names := range files {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range names {
+			if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	out, errw, code := run(t, "--vault", vault, "doctypes", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+	entries, _ := doctypeEntries(t, out)
+
+	want := map[string]float64{
+		"invoice":     2,
+		"receipt":     1,
+		"certificate": 1,
+		// Filed nothing, and says so with a counted zero rather than silence.
+		"passport": 0,
+		"payslip":  0,
+	}
+	for name, n := range want {
+		e, ok := entries[name]
+		if !ok {
+			t.Fatalf("%s is not in the catalog: %s", name, out)
+		}
+		if e["filed"] != n {
+			t.Errorf("%s: filed = %v, want %v", name, e["filed"], n)
+		}
+	}
+	// Four documents were written; no doctype may claim one it does not hold.
+	var sum float64
+	for _, e := range entries {
+		sum += e["filed"].(float64)
+	}
+	if sum != 4 {
+		t.Errorf("filed counts sum to %v across the catalog, but 4 documents were written: %s", sum, out)
+	}
+}
+
+// TestDoctypesIsReadOnly: it lives in find's family, not ingest's. A listing
+// command that writes an index or a sidecar as a side effect would make
+// "just tell me what the catalog is" a mutation.
+func TestDoctypesIsReadOnly(t *testing.T) {
+	vault := initDemo(t)
+	root := filepath.Dir(vault)
+
+	before := map[string]string{}
+	snapshot := func(dst map[string]string) {
+		t.Helper()
+		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			dst[path] = fmt.Sprintf("%d:%x", len(data), data)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot(before)
+
+	if out, errw, code := run(t, "--vault", vault, "doctypes", "--json"); code != ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, out, errw)
+	}
+
+	after := map[string]string{}
+	snapshot(after)
+	for path, sum := range before {
+		if after[path] != sum {
+			t.Errorf("doctypes changed %s", path)
+		}
+	}
+	for path := range after {
+		if _, existed := before[path]; !existed {
+			t.Errorf("doctypes created %s", path)
+		}
+	}
+}
+
+// TestDoctypesHumanOutputNamesEveryDoctype: the two renderings come from one
+// payload, so the table must carry the same names and totals the JSON does.
+func TestDoctypesHumanOutputNamesEveryDoctype(t *testing.T) {
+	vault := initDemo(t)
+	jsonOut, _, code := run(t, "--vault", vault, "doctypes", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s", code, jsonOut)
+	}
+	entries, obj := doctypeEntries(t, jsonOut)
+	total := int(obj["counts"].(map[string]any)["total"].(float64))
+
+	human, errw, code := run(t, "--vault", vault, "doctypes")
+	if code != ExitOK {
+		t.Fatalf("human exit %d: %s\n%s", code, human, errw)
+	}
+	for name := range entries {
+		if !strings.Contains(human, name) {
+			t.Errorf("the table omits %q", name)
+		}
+	}
+	if !strings.Contains(human, fmt.Sprintf("%d doctype(s)", total)) {
+		t.Errorf("the table's total disagrees with counts.total(%d):\n%s", total, human)
+	}
+}

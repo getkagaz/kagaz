@@ -100,11 +100,12 @@ func (o *Ollama) engine() string { return config.EngineOllama + ":" + o.Model }
 // Available reports whether a localhost Ollama server is answering *and* has
 // the configured model pulled.
 //
-// The model check is not pedantry. classify.model is one config key shared with
-// the MLX engine and it defaults to an MLX repo path, so a user who sets
-// `engine: ollama` and nothing else has a model name Ollama has never heard of.
-// Without this check the forced-engine guard passes, every /api/generate 404s,
-// and every document silently degrades to rules with no error and no hint.
+// The model check is not pedantry. classify.model has no default -- naming a
+// model the user never chose would be a lie in every sidecar's provenance --
+// so `engine: ollama` with nothing else set is the common case, and a stale
+// vault may still carry a name this daemon has never pulled. Without this
+// check the forced-engine guard passes, every /api/generate 404s, and every
+// document silently degrades to rules with no error and no hint.
 func (o *Ollama) Available() bool {
 	ok, _, _ := o.availability()
 	return ok

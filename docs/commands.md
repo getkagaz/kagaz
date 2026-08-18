@@ -42,6 +42,21 @@ positional full-text query matched against filename, path, sidecar text and
 extracted fields. `kagaz find --json` is what the MCP `find` tool and the
 menu-bar app both call underneath.
 
+## `kagaz doctypes`
+
+Read-only, like `find`: lists the doctype catalog this vault resolves to, so a
+caller offering a doctype picker never has to hold a list of its own.
+
+Each entry carries `name`, the resolved `category`, a `source` of `built-in`
+(shipped by Kagaz) or `vault` (defined in this vault's `doctypes:` block), and
+`filed`, the number of documents currently filed under it. `counts` reports
+`total`, `vault` and `built_in`; `total` is the same number `kagaz doctor`
+reports as "N doctypes resolved".
+
+A built-in whose category is not in this vault's `structure:` is not in the
+catalog and so is not listed — a trimmed-down vault reports fewer than the full
+built-in set, which is what it actually resolves.
+
 ## `kagaz ingest`
 
 Runs the propose pipeline (OCR → classify → extract → propose) over one or
@@ -226,7 +241,7 @@ Each classifier check carries a `reason` alongside its prose `detail` in
 | `no_metal_device` | no Apple silicon GPU for MLX | nothing |
 | `os_unsupported` | this macOS cannot host the tier (Apple's model needs macOS 26) | nothing |
 | `model_unavailable` | the OS supports it, but the model is not usable right now | waiting, or enabling it in System Settings |
-| `model_not_configured` | `classify.model` is empty | setting it |
+| `model_not_configured` | `classify.model` is empty (the `ollama` tier only; `mlx` is pinned) | setting it to an Ollama model name |
 | `daemon_unreachable` | no Ollama server answered at the endpoint | starting the daemon |
 | `model_not_pulled` | the daemon answers but has not pulled the model | `ollama pull <model>` |
 | `probe_timeout`, `contract_mismatch`, `unreadable_probe`, `unknown` | the probe did not give a usable answer | see `detail` |

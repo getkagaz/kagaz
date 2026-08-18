@@ -84,7 +84,11 @@ func New(cfg *config.Config, cat *doctypes.Catalog) *Chain {
 		if cfg.Classify.MinConfidence > 0 {
 			c.MinConfidence = cfg.Classify.MinConfidence
 		}
-		c.MLX = &MLX{Model: cfg.Classify.Model}
+		// classify.model and classify.endpoint are Ollama's alone. MLX is
+		// pinned to config.DefaultMLXModel (see the MLX type): one key cannot
+		// name a model for two engines whose naming schemes share nothing, and
+		// the version that tried handed Ollama a Hugging Face repo path.
+		c.MLX = &MLX{}
 		c.Ollama = &Ollama{Endpoint: cfg.Classify.Endpoint, Model: cfg.Classify.Model}
 	}
 	return c

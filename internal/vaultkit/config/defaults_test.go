@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -117,6 +118,59 @@ func TestClassifyEngineAutoIsRejected(t *testing.T) {
 	for _, want := range []string{EngineApple, EngineMLX, EngineOllama, EngineRules} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestClassifyModelHasNoDefault pins the half of the split that a fixture
+// cannot: naming an Ollama model the user did not choose would put that name
+// in doctor output and in every sidecar's provenance, so the key stays empty
+// and the ollama tier reports itself unconfigured instead.
+func TestClassifyModelHasNoDefault(t *testing.T) {
+	c := &Config{}
+	c.applyDefaults()
+	if c.Classify.Model != "" {
+		t.Errorf("classify.model defaulted to %q, want empty", c.Classify.Model)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("the defaults must validate: %v", err)
+	}
+}
+
+// TestClassifyModelRejectsRepoPaths pins the "/" discriminator. The value that
+// trips it is almost always the repo path this key used to default to, left in
+// a vault written when classify.model fed the mlx engine too; handing it to
+// Ollama would 404 on every document instead of saying what is wrong.
+func TestClassifyModelRejectsRepoPaths(t *testing.T) {
+	bad := []string{
+		DefaultMLXModel,
+		"mlx-community/Llama-3.2-3B-Instruct-4bit",
+		"org/name",
+	}
+	for _, v := range bad {
+		c := &Config{}
+		c.applyDefaults()
+		c.Classify.Model = v
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("classify.model %q was accepted, want a rejection", v)
+			continue
+		}
+		for _, want := range []string{"classify.model", strconv.Quote(v), EngineOllama, DefaultMLXModel, "qwen2.5:3b"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not contain %q", err, want)
+			}
+		}
+	}
+
+	// Legitimate Ollama names, tagged and untagged, must pass untouched: the
+	// check must not become a general "looks odd to me" filter.
+	for _, v := range []string{"", "qwen2.5:3b", "llama3.1:8b", "mistral", "my-model:v1.2", "hf.co_qwen:latest"} {
+		c := &Config{}
+		c.applyDefaults()
+		c.Classify.Model = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("classify.model %q was rejected: %v", v, err)
 		}
 	}
 }

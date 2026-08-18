@@ -205,12 +205,12 @@
         },
         "model": {
           "type": "string",
-          "description": "Model identifier for the mlx or ollama engines. Defaults to config.DefaultMLXModel (\"mlx-community/Qwen2.5-3B-Instruct-4bit\"), a text LLM pulled by `kagaz model pull`.",
-          "default": "mlx-community/Qwen2.5-3B-Instruct-4bit"
+          "description": "The ollama engine's model name, e.g. \"qwen2.5:3b\". It configures that engine and no other: the mlx engine is pinned to config.DefaultMLXModel (\"mlx-community/Qwen2.5-3B-Instruct-4bit\", the repo `kagaz model pull` fetches) and cannot be repointed. There is no default -- Kagaz will not name a model the user did not choose -- and an empty value makes the ollama tier report itself unavailable with reason \"model_not_configured\". A value containing \"/\" is REJECTED at parse time as a Hugging Face repo path, because this key used to feed both engines and defaulted to one.",
+          "default": ""
         },
         "endpoint": {
           "type": "string",
-          "description": "Ollama HTTP endpoint for the ollama engine. Must be localhost, checked at call time as well as at parse time.",
+          "description": "Ollama HTTP endpoint for the ollama engine, and for that engine alone. Must be localhost, checked at call time as well as at parse time.",
           "default": "http://localhost:11434"
         },
         "min_confidence": {

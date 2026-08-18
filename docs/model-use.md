@@ -25,14 +25,18 @@ model, you know exactly what it is, where it runs, and under what license.
    model terms.
 4. **MLX** (classification, opt-in) — a local model run via MLX-Swift,
    weights fetched by `kagaz model pull` from a **pinned** Hugging Face
-   repository and revision. Default:
-   `mlx-community/Qwen2.5-3B-Instruct-4bit` — a **text** LLM, deliberately,
-   not a vision-language model; classification runs on the OCR'd text, not
-   on document images.
+   repository and revision. The model is
+   `mlx-community/Qwen2.5-3B-Instruct-4bit` and is not configurable: it is
+   what `model pull` fetches, what this build pins a revision for, and what
+   the bundled Metal shader library was compiled against. It is a **text**
+   LLM, deliberately, not a vision-language model; classification runs on the
+   OCR'd text, not on document images.
 5. **Ollama** (classification and, separately, OCR) — opt-in, talks only to
    a local Ollama daemon (`http://localhost:11434` by default), for people
    who already run Ollama and want to point Kagaz at a model of their
-   choosing.
+   choosing. `classify.model` is that choice, and it is Ollama's alone; it has
+   no default, so until you set an Ollama name:tag the tier reports itself
+   unavailable rather than run a model you did not pick.
 
 `classify.engine` names one of four engines, and every model engine ends at the
 deterministic rules tier: **apple** (the default — Apple's on-device model,
