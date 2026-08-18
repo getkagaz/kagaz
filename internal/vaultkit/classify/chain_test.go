@@ -2,7 +2,10 @@ package classify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -670,5 +673,520 @@ func TestChainKeepsGroundedFields(t *testing.T) {
 		if d.Reason == ReasonUngrounded {
 			t.Errorf("%s=%q was dropped as ungrounded, but the document says it", d.Field, d.Value)
 		}
+	}
+}
+
+// mlxWith builds an MLX backend whose probe reports available and whose
+// classify call replays the given recorded response.
+func mlxWith(t *testing.T, classifyFixture string, classifyErr error) *MLX {
+	t.Helper()
+	var out []byte
+	if classifyFixture != "" {
+		out = fixture(t, classifyFixture)
+	}
+	probe := fixture(t, "probe_available.json")
+	return &MLX{
+		Model:  config.DefaultMLXModel,
+		locate: found,
+		run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+			if isProbe(args) {
+				return probe, nil
+			}
+			return out, classifyErr
+		},
+	}
+}
+
+// mlxEngine is the provenance string an accepted MLX answer must carry.
+var mlxEngine = config.EngineMLX + ":" + modelBasename(config.DefaultMLXModel)
+
+// ollamaServing builds an Ollama backend backed by a loopback test server that
+// reports the model pulled and answers every generation with answer. Nothing
+// leaves the machine: httptest listens on 127.0.0.1.
+func ollamaServing(t *testing.T, answer ollamaAnswer) *Ollama {
+	t.Helper()
+	body, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatalf("marshalling answer: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"models": []map[string]string{{"name": "qwen2.5:3b", "model": "qwen2.5:3b"}},
+			})
+		case "/api/generate":
+			_ = json.NewEncoder(w).Encode(ollamaResponse{Response: string(body), Done: true})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Ollama{Endpoint: srv.URL, Model: "qwen2.5:3b", client: srv.Client()}
+}
+
+// chainAll builds a chain over all three model tiers. Any of them may be nil,
+// which means "not present on this machine".
+func chainAll(cat *doctypes.Catalog, engine string, apple *Apple, mlx *MLX, ollama *Ollama) *Chain {
+	return &Chain{
+		Engine:        engine,
+		MinConfidence: 0.5,
+		Catalog:       cat,
+		Rules:         &Rules{Catalog: cat},
+		Apple:         apple,
+		MLX:           mlx,
+		Ollama:        ollama,
+	}
+}
+
+// declinedOllama is an Ollama answer that uses the escape hatch.
+var declinedOllama = ollamaAnswer{DocType: doctypes.Unclassified, Confidence: 0}
+
+// payslipOllama is an accepted Ollama answer for a doctype the rules tier would
+// not pick from invoiceText, so provenance is unambiguous.
+var payslipOllama = ollamaAnswer{DocType: "payslip", Category: "travel", Confidence: 0.91}
+
+// TestChainAutoChainsEverySemanticTier pins the new auto matrix: every way a
+// tier can fail to produce an accepted answer hands over to the NEXT tier, and
+// rules is reached only when none of them did better.
+func TestChainAutoChainsEverySemanticTier(t *testing.T) {
+	cat := testCatalog(t)
+
+	tests := []struct {
+		name  string
+		chain func(t *testing.T) *Chain
+		text  string
+
+		wantDocType string
+		wantCat     string
+		wantEngine  string
+		wantZeroCnf bool
+	}{
+		{
+			// The decline row, one tier along: a model saying "none of these"
+			// does not bind the next model.
+			name: "apple declines: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_declined.json", nil),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantCat:     "financial",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple below min_confidence: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_low_confidence.json", nil),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple returns a doctype outside the catalog: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_unknown_doctype.json", nil),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple errors: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "", errors.New("helper blew up")),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple times out: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "", context.DeadlineExceeded),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple speaks an unknown contract: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_bad_contract.json", nil),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple emits malformed JSON: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_malformed.json", nil),
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple absent: mlx gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					&Apple{locate: missing, run: stubRunner(nil, errors.New("must not run"))},
+					mlxWith(t, "classify_mlx_payslip.json", nil), nil)
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  mlxEngine,
+		},
+		{
+			name: "apple and mlx both absent: ollama gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					&Apple{locate: missing, run: stubRunner(nil, errors.New("must not run"))},
+					&MLX{Model: config.DefaultMLXModel, locate: missing, run: stubRunner(nil, errors.New("must not run"))},
+					ollamaServing(t, payslipOllama))
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantCat:     "financial", // the catalog wins over the model's "travel"
+			wantEngine:  "ollama:qwen2.5:3b",
+		},
+		{
+			name: "apple and mlx both decline: ollama gets its turn",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_declined.json", nil),
+					mlxWith(t, "classify_declined.json", nil),
+					ollamaServing(t, payslipOllama))
+			},
+			text:        invoiceText,
+			wantDocType: "payslip",
+			wantEngine:  "ollama:qwen2.5:3b",
+		},
+		{
+			// The cascade the whole change exists to allow: a decline travels
+			// through every model tier and lands on rules, which still
+			// recognises the document.
+			name: "a decline cascades through all three tiers to rules",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_declined.json", nil),
+					mlxWith(t, "classify_declined.json", nil),
+					ollamaServing(t, declinedOllama))
+			},
+			text:        invoiceText,
+			wantDocType: "invoice",
+			wantCat:     "financial",
+			wantEngine:  config.EngineRules,
+		},
+		{
+			name: "every tier declines and rules find nothing: unclassified",
+			chain: func(t *testing.T) *Chain {
+				return chainAll(cat, config.EngineAuto,
+					appleWith(t, "classify_declined.json", nil),
+					mlxWith(t, "classify_declined.json", nil),
+					ollamaServing(t, declinedOllama))
+			},
+			text:        noiseText,
+			wantDocType: doctypes.Unclassified,
+			wantEngine:  config.EngineRules,
+			wantZeroCnf: true,
+		},
+		{
+			// Forcing a tier still means "that tier, then rules" -- never the
+			// other model tiers, whatever is installed.
+			name: "forced mlx does not chain on to ollama",
+			chain: func(t *testing.T) *Chain {
+				o := ollamaServing(t, payslipOllama)
+				return chainAll(cat, config.EngineMLX,
+					appleWith(t, "classify_invoice.json", nil),
+					mlxWith(t, "classify_declined.json", nil), o)
+			},
+			text:        invoiceText,
+			wantDocType: "invoice",
+			wantEngine:  config.EngineRules,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.chain(t).Classify(context.Background(), Request{Text: tc.text, Path: "/vault/doc.pdf"})
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if got.DocType != tc.wantDocType {
+				t.Errorf("DocType = %q, want %q", got.DocType, tc.wantDocType)
+			}
+			if tc.wantCat != "" && got.Category != tc.wantCat {
+				t.Errorf("Category = %q, want %q", got.Category, tc.wantCat)
+			}
+			if got.Engine != tc.wantEngine {
+				t.Errorf("Engine = %q, want %q", got.Engine, tc.wantEngine)
+			}
+			if tc.wantZeroCnf && got.Confidence != 0 {
+				t.Errorf("Confidence = %v, want 0", got.Confidence)
+			}
+			if !tc.wantZeroCnf && got.Confidence <= 0 {
+				t.Errorf("Confidence = %v, want > 0", got.Confidence)
+			}
+		})
+	}
+}
+
+// TestChainAutoStopsAtTheFirstAcceptedTier pins that chaining is a fallback,
+// not a fan-out: an accepted answer ends the chain and nothing further runs.
+func TestChainAutoStopsAtTheFirstAcceptedTier(t *testing.T) {
+	cat := testCatalog(t)
+	var mlxCalls atomic.Int64
+	m := &MLX{
+		Model:  config.DefaultMLXModel,
+		locate: found,
+		run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+			if isProbe(args) {
+				return fixture(t, "probe_available.json"), nil
+			}
+			mlxCalls.Add(1)
+			return fixture(t, "classify_mlx_payslip.json"), nil
+		},
+	}
+	c := chainAll(cat, config.EngineAuto, appleWith(t, "classify_invoice.json", nil), m, nil)
+
+	got, err := c.Classify(context.Background(), Request{Text: invoiceText})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got.Engine != config.EngineApple {
+		t.Fatalf("Engine = %q, want apple", got.Engine)
+	}
+	if n := mlxCalls.Load(); n != 0 {
+		t.Errorf("mlx classified %d times after apple was accepted, want 0", n)
+	}
+}
+
+// TestChainAutoAttemptsEachTierAtMostOncePerDocument bounds the chain: three
+// tiers, three declines, one classification each and no retries.
+func TestChainAutoAttemptsEachTierAtMostOncePerDocument(t *testing.T) {
+	cat := testCatalog(t)
+	var appleCalls, mlxCalls, ollamaCalls atomic.Int64
+
+	declined := fixture(t, "classify_declined.json")
+	probe := fixture(t, "probe_available.json")
+	a := &Apple{locate: found, run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+		if isProbe(args) {
+			return probe, nil
+		}
+		appleCalls.Add(1)
+		return declined, nil
+	}}
+	m := &MLX{Model: config.DefaultMLXModel, locate: found, run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+		if isProbe(args) {
+			return probe, nil
+		}
+		mlxCalls.Add(1)
+		return declined, nil
+	}}
+
+	body, err := json.Marshal(declinedOllama)
+	if err != nil {
+		t.Fatalf("marshalling answer: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"models": []map[string]string{{"name": "qwen2.5:3b", "model": "qwen2.5:3b"}},
+			})
+		case "/api/generate":
+			ollamaCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(ollamaResponse{Response: string(body), Done: true})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	o := &Ollama{Endpoint: srv.URL, Model: "qwen2.5:3b", client: srv.Client()}
+
+	c := chainAll(cat, config.EngineAuto, a, m, o)
+	got, err := c.Classify(context.Background(), Request{Text: invoiceText})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got.Engine != config.EngineRules {
+		t.Errorf("Engine = %q, want rules", got.Engine)
+	}
+	for _, tc := range []struct {
+		name string
+		n    int64
+	}{
+		{config.EngineApple, appleCalls.Load()},
+		{config.EngineMLX, mlxCalls.Load()},
+		{config.EngineOllama, ollamaCalls.Load()},
+	} {
+		if tc.n != 1 {
+			t.Errorf("%s classified %d times, want exactly 1", tc.name, tc.n)
+		}
+	}
+}
+
+// TestChainStopsOnCancellationPartWayThrough pins that a cancelled caller stops
+// the chain instead of paying out the remaining tiers. Rules still answers:
+// it is in-process and ignores the context, and failing an ingest for a
+// classifier reason is what invariant 4 forbids.
+func TestChainStopsOnCancellationPartWayThrough(t *testing.T) {
+	cat := testCatalog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	declined := fixture(t, "classify_declined.json")
+	probe := fixture(t, "probe_available.json")
+	a := &Apple{locate: found, run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+		if isProbe(args) {
+			return probe, nil
+		}
+		// The caller gives up while the first tier is running.
+		cancel()
+		return declined, nil
+	}}
+	var mlxCalls, ollamaCalls atomic.Int64
+	m := &MLX{Model: config.DefaultMLXModel, locate: found, run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+		if isProbe(args) {
+			return probe, nil
+		}
+		mlxCalls.Add(1)
+		return fixture(t, "classify_mlx_payslip.json"), nil
+	}}
+	body, err := json.Marshal(payslipOllama)
+	if err != nil {
+		t.Fatalf("marshalling answer: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"models": []map[string]string{{"name": "qwen2.5:3b", "model": "qwen2.5:3b"}},
+			})
+		case "/api/generate":
+			ollamaCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(ollamaResponse{Response: string(body), Done: true})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	o := &Ollama{Endpoint: srv.URL, Model: "qwen2.5:3b", client: srv.Client()}
+
+	c := chainAll(cat, config.EngineAuto, a, m, o)
+	got, err := c.Classify(ctx, Request{Text: invoiceText})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if n := mlxCalls.Load(); n != 0 {
+		t.Errorf("mlx ran %d times after cancellation, want 0", n)
+	}
+	if n := ollamaCalls.Load(); n != 0 {
+		t.Errorf("ollama ran %d times after cancellation, want 0", n)
+	}
+	if got.Engine != config.EngineRules {
+		t.Errorf("Engine = %q, want rules", got.Engine)
+	}
+	if got.DocType != "invoice" {
+		t.Errorf("DocType = %q, want invoice", got.DocType)
+	}
+}
+
+// TestChainRulesEngineRunsNoModelAndTakesNoProbe pins the explicit "no LLM
+// used" choice: not one helper is launched, and not even an availability probe
+// is taken.
+func TestChainRulesEngineRunsNoModelAndTakesNoProbe(t *testing.T) {
+	cat := testCatalog(t)
+	forbid := func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+		t.Errorf("a helper was invoked with engine=rules: %v", args)
+		return nil, errors.New("must not run")
+	}
+	locateForbid := func() (string, bool) {
+		t.Error("helper discovery ran with engine=rules")
+		return "", false
+	}
+	o := &Ollama{
+		Endpoint: "http://localhost:11434",
+		Model:    "qwen2.5:3b",
+		client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Error("the ollama daemon was contacted with engine=rules")
+			return nil, errors.New("must not run")
+		})},
+	}
+	c := chainAll(cat, config.EngineRules,
+		&Apple{locate: locateForbid, run: forbid},
+		&MLX{Model: config.DefaultMLXModel, locate: locateForbid, run: forbid}, o)
+
+	got, err := c.Classify(context.Background(), Request{Text: invoiceText})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got.Engine != config.EngineRules || got.DocType != "invoice" {
+		t.Errorf("got %s/%s, want invoice/rules", got.DocType, got.Engine)
+	}
+	if plan := c.Plan(); len(plan.Order) != 1 || plan.Order[0] != config.EngineRules {
+		t.Errorf("Plan().Order = %v, want [rules]", plan.Order)
+	}
+}
+
+// TestChainPlanReportsTheOrderItWillActuallyTry pins what `kagaz doctor` shows.
+func TestChainPlanReportsTheOrderItWillActuallyTry(t *testing.T) {
+	cat := testCatalog(t)
+
+	c := chainAll(cat, config.EngineAuto,
+		appleWith(t, "classify_invoice.json", nil),
+		&MLX{Model: config.DefaultMLXModel, locate: missing}, nil)
+	plan := c.Plan()
+	if plan.Engine != config.EngineAuto {
+		t.Errorf("Engine = %q, want auto", plan.Engine)
+	}
+	if len(plan.Order) != 2 || plan.Order[0] != config.EngineApple || plan.Order[1] != config.EngineRules {
+		t.Errorf("Order = %v, want [apple rules]", plan.Order)
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0] != config.EngineMLX {
+		t.Errorf("Skipped = %v, want [mlx]", plan.Skipped)
+	}
+	if plan.Err != "" {
+		t.Errorf("Err = %q, want none", plan.Err)
+	}
+
+	// All three ready: the full documented order.
+	full := chainAll(cat, config.EngineAuto,
+		appleWith(t, "classify_declined.json", nil),
+		mlxWith(t, "classify_declined.json", nil),
+		ollamaServing(t, declinedOllama))
+	want := []string{config.EngineApple, config.EngineMLX, config.EngineOllama, config.EngineRules}
+	got := full.Plan().Order
+	if len(got) != len(want) {
+		t.Fatalf("Order = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Order = %v, want %v", got, want)
+		}
+	}
+
+	// A forced, uninstalled engine is the one condition doctor must show as a
+	// failure rather than an order.
+	bad := chainAll(cat, config.EngineMLX, nil, &MLX{Model: config.DefaultMLXModel, locate: missing}, nil)
+	if p := bad.Plan(); p.Err == "" {
+		t.Errorf("Plan() = %+v, want an error for a forced uninstalled engine", p)
 	}
 }

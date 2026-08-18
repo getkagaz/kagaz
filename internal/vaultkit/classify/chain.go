@@ -10,24 +10,54 @@ import (
 
 // Chain implements the classify.engine setting over the tiered backends.
 //
-// The fallback matrix it guarantees:
+// # The tier order
 //
-//	engine=auto, apple available            -> apple, validated
-//	engine=auto, apple absent               -> rules
-//	semantic declines (doctypes.Unclassified) -> rules
-//	semantic doctype not in the catalog     -> rules
-//	semantic confidence < min_confidence    -> rules
-//	semantic category disagrees w/ catalog  -> catalog's category wins
-//	helper exits non-zero (structured err)  -> rules
-//	helper speaks an unknown contract       -> rules
-//	helper emits malformed JSON             -> rules
-//	helper times out                        -> rules
-//	rules unconfident or unmatched          -> doctypes.Unclassified, 0.0
-//	forced engine unavailable               -> error naming the fix
-//	forced engine available but failing     -> rules
+//	auto    apple -> mlx (if available) -> ollama (if available) -> rules
+//	apple   apple -> rules
+//	mlx     mlx   -> rules
+//	ollama  ollama -> rules
+//	rules   rules only; no model is ever run and no probe is ever taken
+//
+// auto chains every semantic tier the machine actually has, because a tier
+// that declines or misfires does not bind the next one -- that is the point of
+// having several. `rules` is the explicit "no LLM used" choice.
+//
+// # The fallback matrix
+//
+// "next" means the next tier in the order above, and rules when there is none.
+//
+//	tier unavailable (no binary/weights/daemon) -> next, skipped on a cached probe
+//	tier declines (doctypes.Unclassified)       -> next
+//	tier doctype not in the catalog             -> next
+//	tier confidence < min_confidence            -> next
+//	tier exits non-zero (structured err)        -> next
+//	tier speaks an unknown contract             -> next
+//	tier emits malformed JSON                   -> next
+//	tier times out                              -> next
+//	tier category disagrees w/ the catalog      -> catalog's category wins
+//	caller's context cancelled mid-chain        -> stop, rules (in-process)
+//	rules unconfident or unmatched              -> doctypes.Unclassified, 0.0
+//	forced engine unavailable                   -> error naming the fix
+//	forced engine available but failing         -> rules
 //
 // Only the forced-unavailable row is an error. Everything else degrades,
 // because a classifier problem must never fail an ingest.
+//
+// # Bounding the chain
+//
+// Each tier is attempted at most once per document: the order is a slice of
+// distinct backends and the loop never revisits one. Availability is decided
+// by each backend's own memoised probe (probeCache for the two Swift helpers,
+// a TTL for Ollama), so an absent tier costs a map lookup rather than a helper
+// launch per document. The caller's context is checked before each tier, so a
+// cancelled ingest stops the chain instead of paying out the remaining tiers.
+//
+// Worst case under auto is therefore one classifyTimeout (30s, apple) plus one
+// mlxClassifyTimeout (2m) plus one ollamaClassifyTimeout (2m) = 4m30s for a
+// single document on a machine where all three tiers are installed and all
+// three hang -- unchanged per tier, and reached only by a document that every
+// installed model both answers slowly and fails on. In the ordinary declining
+// case the cost is three real inferences instead of one.
 type Chain struct {
 	// Engine is one of the config.Engine* constants. Empty means auto.
 	Engine string
@@ -88,7 +118,7 @@ func (c *Chain) Classify(ctx context.Context, req Request) (Result, error) {
 		req.DocTypes = cat.Spec()
 	}
 
-	semantic, err := c.semanticBackend()
+	tiers, err := c.semanticTiers()
 	if err != nil {
 		// The one hard failure: the user forced an engine that is not
 		// installed, and silently using a different one would misreport
@@ -96,8 +126,16 @@ func (c *Chain) Classify(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	if semantic != nil {
-		if res, ok := c.trySemantic(ctx, semantic, req, cat); ok {
+	for _, tier := range tiers {
+		// Cancellation stops the chain rather than paying out the remaining
+		// tiers. Rules still runs: it is pure in-process regex work that
+		// ignores the context entirely, so it costs nothing to answer with,
+		// and the alternative -- a hard error -- would fail an ingest for a
+		// classifier reason, which invariant 4 forbids.
+		if ctx.Err() != nil {
+			break
+		}
+		if res, ok := c.trySemantic(ctx, tier, req, cat); ok {
 			return res, nil
 		}
 	}
@@ -105,7 +143,7 @@ func (c *Chain) Classify(ctx context.Context, req Request) (Result, error) {
 }
 
 // trySemantic runs a model backend and validates its answer. The bool reports
-// whether the answer was accepted; false means "fall back to rules", and the
+// whether the answer was accepted; false means "try the next tier", and the
 // reason is deliberately not surfaced as an error, because none of these
 // conditions should fail an ingest.
 func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request, cat *doctypes.Catalog) (Result, bool) {
@@ -119,9 +157,10 @@ func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request
 		// The model used its escape hatch: it was offered doctypes.Unclassified
 		// alongside the catalog and answered that none of them fits. That is a
 		// deliberate, useful answer, not the unknown-doctype validation failure
-		// it would otherwise look like. Rules still get their turn -- a keyword
-		// or a machine-readable zone can recognise a document the model could
-		// not -- and an unmatched rules tier lands on Unclassified anyway.
+		// it would otherwise look like. The next tier still gets its turn:
+		// one model declining does not bind another, and a keyword or a
+		// machine-readable zone can recognise a document no model could. An
+		// unmatched rules tier lands on Unclassified anyway.
 		return Result{}, false
 	}
 	res, ok := validate(cat, raw, c.MinConfidence)
@@ -162,33 +201,104 @@ func (c *Chain) rulesResult(ctx context.Context, req Request, cat *doctypes.Cata
 	return res
 }
 
-// semanticBackend picks the model tier for the configured engine. A nil
-// backend with a nil error means "go straight to rules"; a non-nil error means
-// the user forced an engine that is not installed.
-func (c *Chain) semanticBackend() (Classifier, error) {
+// semanticTiers returns the model tiers to attempt, in order, for the
+// configured engine. An empty slice with a nil error means "go straight to
+// rules"; a non-nil error means the user forced an engine that is not
+// installed.
+//
+// Every element is a distinct backend, which is what makes "each tier at most
+// once per document" a property of the data rather than of the loop. Under
+// auto the list is filtered by Available(), so an unavailable tier is never
+// entered at all; that call is each backend's memoised probe, not a fresh
+// helper launch.
+func (c *Chain) semanticTiers() ([]Classifier, error) {
 	switch c.Engine {
 	case "", config.EngineAuto:
-		// auto tries apple only. MLX and Ollama are opt-in: they cost weights
-		// on disk and minutes of CPU, which is not something to fall into.
+		// auto chains every tier this machine actually has, cheapest first:
+		// apple needs no weights, mlx has them on disk, ollama is a daemon.
+		// A tier that is not installed is skipped rather than paid for, so the
+		// cost of the longer chain lands only on machines that opted into the
+		// extra tiers by installing them.
+		var tiers []Classifier
 		if c.Apple != nil && c.Apple.Available() {
-			return c.Apple, nil
+			tiers = append(tiers, c.Apple)
 		}
-		return nil, nil
+		if c.MLX != nil && c.MLX.Available() {
+			tiers = append(tiers, c.MLX)
+		}
+		if c.Ollama != nil && c.Ollama.Available() {
+			tiers = append(tiers, c.Ollama)
+		}
+		return tiers, nil
 
 	case config.EngineRules:
+		// The explicit "no LLM used" choice. Nothing below this line may probe
+		// or spawn a helper: not even Available() is called, so `rules` costs
+		// no process and no socket.
 		return nil, nil
 
 	case config.EngineApple:
-		return forced(c.Apple, config.EngineApple)
+		return forcedTier(c.Apple, config.EngineApple)
 	case config.EngineMLX:
-		return forced(c.MLX, config.EngineMLX)
+		return forcedTier(c.MLX, config.EngineMLX)
 	case config.EngineOllama:
-		return forced(c.Ollama, config.EngineOllama)
+		return forcedTier(c.Ollama, config.EngineOllama)
 
 	default:
 		return nil, fmt.Errorf("classify.engine %q is not one of %s, %s, %s, %s, %s",
 			c.Engine, config.EngineAuto, config.EngineApple, config.EngineMLX, config.EngineOllama, config.EngineRules)
 	}
+}
+
+// forcedTier wraps forced as a one-element tier list.
+func forcedTier[T Classifier](backend T, engine string) ([]Classifier, error) {
+	b, err := forced(backend, engine)
+	if err != nil {
+		return nil, err
+	}
+	return []Classifier{b}, nil
+}
+
+// Plan is what Classify will actually do on this machine right now, for
+// `kagaz doctor`.
+type Plan struct {
+	// Engine is the configured classify.engine.
+	Engine string `json:"engine"`
+	// Order lists the tiers that will be attempted, in order, always ending
+	// in "rules". Empty only when Err is set.
+	Order []string `json:"order,omitempty"`
+	// Skipped lists tiers the configured engine would have used but which are
+	// unavailable right now.
+	Skipped []string `json:"skipped,omitempty"`
+	// Err is set when the configured engine is forced and unavailable, which
+	// is the one condition that fails a classification outright.
+	Err string `json:"error,omitempty"`
+}
+
+// Plan reports the tier order Classify will follow, so doctor and the pipeline
+// agree by construction. It reuses each backend's cached probe.
+func (c *Chain) Plan() Plan {
+	p := Plan{Engine: c.Engine}
+	if p.Engine == "" {
+		p.Engine = config.EngineAuto
+	}
+	tiers, err := c.semanticTiers()
+	if err != nil {
+		p.Err = err.Error()
+		return p
+	}
+	for _, t := range tiers {
+		p.Order = append(p.Order, t.Name())
+	}
+	if p.Engine == config.EngineAuto {
+		for _, s := range c.Describe() {
+			if s.Name != config.EngineRules && !s.Available {
+				p.Skipped = append(p.Skipped, s.Name)
+			}
+		}
+	}
+	p.Order = append(p.Order, config.EngineRules)
+	return p
 }
 
 // forced returns a explicitly-selected backend, or an error naming the fix when

@@ -34,10 +34,20 @@ model, you know exactly what it is, where it runs, and under what license.
    who already run Ollama and want to point Kagaz at a model of their
    choosing.
 
-`classify.engine: auto` (the default) tries the Apple Foundation Models tier
-where available and falls back to rules; it never silently reaches for MLX
-or Ollama, both of which are opt-in only, set explicitly in `vault.yaml` or
-via `--engine`.
+`classify.engine: auto` (the default) chains every semantic tier this machine
+actually has, cheapest first: **apple → mlx (if available) → ollama (if
+available) → rules**. A tier hands over to the *next* one when it is
+unavailable, errors, times out, emits malformed output, speaks an unknown
+contract, declines with `unclassified`, answers below `min_confidence`, or
+names a doctype outside the catalog — a decline by one model does not bind
+another — and the answer falls to rules only when no tier does better.
+
+Nothing is installed on your behalf: MLX and Ollama are reached only when
+their weights or daemon are already present, so a machine that never ran
+`kagaz model pull` behaves exactly as before. Naming an engine explicitly
+still means "that tier, then rules": `mlx` never chains on to `ollama`.
+`rules` is the explicit no-LLM choice — no model is run and no availability
+probe is taken. `kagaz doctor` prints the order the chain will actually try.
 
 ## The only network call
 

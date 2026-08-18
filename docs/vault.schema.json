@@ -200,7 +200,7 @@
         "engine": {
           "type": "string",
           "enum": ["auto", "apple", "mlx", "ollama", "rules"],
-          "description": "\"auto\" tries the Apple Foundation Models tier first (when available) and falls back to rules. A named engine that is unavailable is an error naming the fix, except that any backend failure or below-min_confidence result always falls back to rules.",
+          "description": "\"auto\" chains every semantic tier this machine has: apple -> mlx (if available) -> ollama (if available) -> rules. A named engine runs that tier and then rules (apple -> rules, mlx -> rules, ollama -> rules). \"rules\" is the explicit no-LLM choice: no model is run and no availability probe is taken. Under auto, a tier that is unavailable, errors, times out, emits malformed output, speaks an unknown contract, declines with \"unclassified\", answers below min_confidence, or names a doctype outside the catalog hands over to the NEXT tier; only when none does better does the answer come from rules. Each tier is attempted at most once per document, unavailable tiers are skipped on a cached probe, and the whole chain honours the caller's cancellation. A named engine that is unavailable is an error naming the fix.",
           "default": "auto"
         },
         "model": {

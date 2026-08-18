@@ -236,6 +236,24 @@ func checkHelper() Check {
 func checkClassifiers(cfg *config.Config) []Check {
 	chain := classify.New(cfg, nil)
 	var out []Check
+
+	// The order first, then the tiers. With engine=auto the interesting fact is
+	// not "is mlx installed" but "what will actually be tried, in what order",
+	// and that is a property of the chain, not of any one backend.
+	plan := chain.Plan()
+	order := Check{Name: "classify:chain", Status: CheckOK,
+		Detail: plan.Engine + ": " + strings.Join(plan.Order, " -> ")}
+	if len(plan.Skipped) > 0 {
+		order.Detail += " (skipped, unavailable: " + strings.Join(plan.Skipped, ", ") + ")"
+	}
+	if plan.Err != "" {
+		order.Status = CheckFail
+		order.Detail = plan.Err
+		order.Impact = "every classification fails until this engine is installed or classify.engine is changed"
+		order.Fix = "install the engine named above, or set classify.engine: auto in vault.yaml"
+	}
+	out = append(out, order)
+
 	for _, s := range chain.Describe() {
 		c := Check{Name: "classify:" + s.Name, Status: CheckOK, Detail: s.Detail}
 		if !s.Available {

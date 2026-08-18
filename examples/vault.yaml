@@ -159,10 +159,23 @@ ocr:
     endpoint: "http://localhost:11434"
 
 classify:
-  # auto | apple | mlx | ollama | rules. "auto" tries Apple Foundation
-  # Models (macOS 26+) where available and falls back to rules. A backend
-  # failure or a result below min_confidence always falls back to rules,
-  # regardless of which engine was selected.
+  # auto | apple | mlx | ollama | rules.
+  #
+  #   auto    apple -> mlx (if available) -> ollama (if available) -> rules
+  #   apple   apple  -> rules
+  #   mlx     mlx    -> rules
+  #   ollama  ollama -> rules
+  #   rules   rules only; no model is run and no probe is taken
+  #
+  # "auto" chains every semantic tier this machine actually has. A tier that
+  # is unavailable, errors, times out, returns malformed output, speaks an
+  # unknown contract, declines ("unclassified"), answers below
+  # min_confidence, or names a doctype outside the catalog hands over to the
+  # NEXT tier -- one model declining does not bind another -- and the answer
+  # falls to rules only when no tier does better. Each tier is tried at most
+  # once per document and unavailable tiers are skipped on a cached probe.
+  # A named engine that is not installed is an error naming the fix.
+  # `kagaz doctor` prints the order it will actually try.
   engine: auto
   # Used by the mlx and ollama engines. The default is a pinned MLX text
   # LLM (not a vision-language model) fetched by `kagaz model pull`.
