@@ -46,6 +46,10 @@ type Check struct {
 	// rebuild, a daemon to start -- from this and never from the sentence.
 	// See classify's Reason* constants for the vocabulary.
 	Reason string `json:"reason,omitempty"`
+	// Model names the weights a classifier check's tier would load, so a
+	// client displays the CLI's answer instead of keeping its own copy of a
+	// pin it cannot see move. See classify.Status.Model.
+	Model string `json:"model,omitempty"`
 }
 
 // DoctorPayload is the `kagaz doctor --json` body.
@@ -262,7 +266,8 @@ func checkClassifiers(cfg *config.Config) []Check {
 	out = append(out, order)
 
 	for _, s := range chain.Describe() {
-		c := Check{Name: "classify:" + s.Name, Status: CheckOK, Detail: s.Detail, Reason: s.Reason}
+		c := Check{Name: "classify:" + s.Name, Status: CheckOK, Detail: s.Detail,
+			Reason: s.Reason, Model: s.Model}
 		if !s.Available {
 			c.Status = CheckWarn
 			if c.Detail == "" {

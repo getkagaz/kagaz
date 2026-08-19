@@ -1235,3 +1235,91 @@ func ollamaWithoutModel(t *testing.T) *Ollama {
 	t.Cleanup(srv.Close)
 	return &Ollama{Endpoint: srv.URL, Model: "qwen2.5:3b", client: srv.Client()}
 }
+
+// TestDescribeReportsTheModelEachTierWouldLoad pins Status.Model, which exists
+// so a client shows the CLI's answer instead of keeping a copy of
+// config.DefaultMLXModel that goes stale the day the pin moves.
+//
+// The MLX cases are the load-bearing ones: the field must be filled with the
+// helper missing and with the weights missing, because a UI asking "what would
+// MLX load here" asks exactly when the answer is "nothing yet".
+func TestDescribeReportsTheModelEachTierWouldLoad(t *testing.T) {
+	cat := testCatalog(t)
+	weightsMissing := &MLX{locate: found,
+		run: func(_ context.Context, _ string, args []string, _ string) ([]byte, error) {
+			if isProbe(args) {
+				return fixture(t, "probe_weights_missing.json"), nil
+			}
+			return nil, errors.New("must not classify")
+		}}
+
+	tests := []struct {
+		name  string
+		chain *Chain
+		want  map[string]string // engine -> model
+	}{
+		{
+			name:  "mlx names the pinned repo with no helper installed",
+			chain: chainAll(cat, config.EngineMLX, &Apple{}, &MLX{locate: missing}, nil),
+			want:  map[string]string{config.EngineMLX: config.DefaultMLXModel},
+		},
+		{
+			name:  "mlx names the pinned repo with the weights not yet pulled",
+			chain: chainAll(cat, config.EngineMLX, &Apple{}, weightsMissing, nil),
+			want:  map[string]string{config.EngineMLX: config.DefaultMLXModel},
+		},
+		{
+			name:  "mlx names the pinned repo when it is ready to run",
+			chain: chainAll(cat, config.EngineMLX, &Apple{}, mlxWith(t, "classify_mlx_payslip.json", nil), nil),
+			want:  map[string]string{config.EngineMLX: config.DefaultMLXModel},
+		},
+		{
+			name: "ollama names the vault's own model",
+			chain: chainAll(cat, config.EngineOllama, &Apple{}, nil,
+				&Ollama{Endpoint: "http://127.0.0.1:1", Model: "qwen2.5:3b"}),
+			want: map[string]string{config.EngineOllama: "qwen2.5:3b"},
+		},
+		{
+			// Not DefaultMLXModel and not an Ollama default either: naming a
+			// model the user never chose is the invention this field exists
+			// to stop, and it would reach every sidecar's provenance.
+			name: "ollama names nothing when classify.model is unset",
+			chain: chainAll(cat, config.EngineOllama, &Apple{}, nil,
+				&Ollama{Endpoint: "http://127.0.0.1:1"}),
+			want: map[string]string{config.EngineOllama: ""},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string]string{}
+			for _, s := range tc.chain.Describe() {
+				got[s.Name] = s.Model
+			}
+			for engine, want := range tc.want {
+				if got[engine] != want {
+					t.Errorf("%s model = %q, want %q", engine, got[engine], want)
+				}
+			}
+			// The tiers that load no weights say so by saying nothing.
+			for _, engine := range []string{config.EngineRules, config.EngineApple} {
+				if got[engine] != "" {
+					t.Errorf("%s reports model %q; it loads none", engine, got[engine])
+				}
+			}
+		})
+	}
+}
+
+// TestStatusModelIsOmittedRatherThanEmpty: a client that asks whether the key
+// is there and one that asks whether the string is non-empty must reach the
+// same answer, so a tier with no model must not serialise "model": "".
+func TestStatusModelIsOmittedRatherThanEmpty(t *testing.T) {
+	b, err := json.Marshal(Status{Name: config.EngineRules, Available: true, Detail: "built in"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if contains(string(b), "model") {
+		t.Errorf("a tier with no model serialised one: %s", b)
+	}
+}

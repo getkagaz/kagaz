@@ -317,12 +317,14 @@ func (c *Chain) Describe() []Status {
 			Detail: c.Apple.detail(), Reason: c.Apple.reason()})
 	}
 	if c.MLX != nil {
+		// The pinned repo regardless of Available: a client asking "what would
+		// MLX load here" is usually asking precisely because it cannot load.
 		out = append(out, Status{Name: config.EngineMLX, Available: c.MLX.Available(),
-			Detail: c.MLX.detail(), Reason: c.MLX.reason()})
+			Detail: c.MLX.detail(), Reason: c.MLX.reason(), Model: config.DefaultMLXModel})
 	}
 	if c.Ollama != nil {
 		out = append(out, Status{Name: config.EngineOllama, Available: c.Ollama.Available(),
-			Detail: c.Ollama.detail(), Reason: c.Ollama.reason()})
+			Detail: c.Ollama.detail(), Reason: c.Ollama.reason(), Model: c.Ollama.Model})
 	}
 	return out
 }
@@ -338,4 +340,13 @@ type Status struct {
 	// client never has to pattern-match Detail: "the weights are missing" and
 	// "the helper is missing" look alike in prose and need opposite actions.
 	Reason string `json:"reason,omitempty"`
+	// Model is the identifier of the weights this tier would load, and exists
+	// for the same reason Reason does: so a client never has to derive it. The
+	// alternative is a client hardcoding a copy of config.DefaultMLXModel,
+	// which goes stale silently the day the pin moves. It is set whether or
+	// not the tier is available -- "what would MLX load" is a fair question on
+	// a machine where MLX cannot run -- and empty for the tiers that load no
+	// weights at all, and for an Ollama with no classify.model, where naming a
+	// default the user never chose would be the same invention.
+	Model string `json:"model,omitempty"`
 }

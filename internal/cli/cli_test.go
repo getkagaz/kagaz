@@ -1567,3 +1567,96 @@ func TestDoctypesHumanOutputNamesEveryDoctype(t *testing.T) {
 		t.Errorf("the table's total disagrees with counts.total(%d):\n%s", total, human)
 	}
 }
+
+// TestDoctorReportsEachClassifierTiersModel: the app shows the MLX tier's
+// pinned repo, and for a while it did so by keeping its own copy of
+// config.DefaultMLXModel in Swift -- a transcription that would go on printing
+// the old repo, silently and confidently, the day the pin moved. doctor is the
+// only thing that can answer, so it must.
+//
+// PATH and KAGAZ_MACHELPER are emptied deliberately. MLX is UNAVAILABLE here,
+// which is the state the pane most needs the repo in: "what would MLX load if
+// I installed it" is the question a user asks precisely when it is not
+// installed, and populating the field only on the success path would leave
+// that screen blank.
+func TestDoctorReportsEachClassifierTiersModel(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("KAGAZ_MACHELPER", filepath.Join(t.TempDir(), "absent"))
+
+	models := func(vault string) map[string]map[string]any {
+		t.Helper()
+		out, errw, code := run(t, "--vault", vault, "doctor", "--json")
+		if code != ExitOK && code != ExitFailure {
+			t.Fatalf("doctor exited %d: %s\n%s", code, out, errw)
+		}
+		checks, _ := decode(t, out)["checks"].([]any)
+		byName := map[string]map[string]any{}
+		for _, c := range checks {
+			m := c.(map[string]any)
+			byName[m["name"].(string)] = m
+		}
+		return byName
+	}
+
+	t.Run("mlx reports the pinned repo with no helper installed", func(t *testing.T) {
+		checks := models(initDemo(t))
+		mlx, ok := checks["classify:mlx"]
+		if !ok {
+			t.Fatalf("no classify:mlx check ran")
+		}
+		if mlx["status"] == CheckOK {
+			t.Fatalf("the MLX helper is somehow available with an empty PATH: %v", mlx)
+		}
+		if mlx["model"] != config.DefaultMLXModel {
+			t.Errorf("classify:mlx model = %v, want the pinned %q", mlx["model"], config.DefaultMLXModel)
+		}
+	})
+
+	// The Ollama tier's model is genuinely per-vault, so it is worth reporting
+	// and it must be the vault's own value, never a substituted default: a
+	// name the user did not choose would be exactly the invention this field
+	// exists to stop.
+	t.Run("ollama reports the vault's configured model", func(t *testing.T) {
+		vault := initDemo(t)
+		appendYAML(t, vault, "\nclassify:\n  engine: ollama\n  model: qwen2.5:3b\n")
+		if got := models(vault)["classify:ollama"]["model"]; got != "qwen2.5:3b" {
+			t.Errorf("classify:ollama model = %v, want %q", got, "qwen2.5:3b")
+		}
+	})
+
+	t.Run("ollama reports no model when classify.model is unset", func(t *testing.T) {
+		ollama := models(initDemo(t))["classify:ollama"]
+		if _, present := ollama["model"]; present {
+			t.Errorf("classify:ollama carries a model with classify.model unset: %v", ollama["model"])
+		}
+	})
+
+	// Absent, not present-and-empty. A client that tests for the key's
+	// presence and one that tests for a non-empty string must agree, and a
+	// tier that loads no weights has nothing to say.
+	t.Run("apple and rules carry no model at all", func(t *testing.T) {
+		checks := models(initDemo(t))
+		for _, name := range []string{"classify:apple", "classify:rules"} {
+			c, ok := checks[name]
+			if !ok {
+				t.Fatalf("no %s check ran", name)
+			}
+			if v, present := c["model"]; present {
+				t.Errorf("%s reports model %#v; the key must be absent", name, v)
+			}
+		}
+	})
+}
+
+// appendYAML adds text to a vault.yaml.
+func appendYAML(t *testing.T, vault, text string) {
+	t.Helper()
+	f, err := os.OpenFile(vault, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open %s: %v", vault, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatalf("append to %s: %v", vault, err)
+	}
+}
