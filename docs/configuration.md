@@ -119,9 +119,32 @@ vocabulary. Anything outside all of these is a `kagaz lint` finding.
 | Field | Default | Meaning |
 |---|---|---|
 | `vision_languages` | `["en-US"]` | Language hints for Apple Vision OCR. |
-| `ollama.enabled` | `"auto"` | `"auto"` \| `"true"` \| `"false"`. |
+| `ollama.enabled` | `"false"` | `"auto"` \| `"true"` \| `"false"`. |
 | `ollama.model` | *(unset)* | Ollama vision-model name, e.g. `unlimited-ocr`. |
 | `ollama.endpoint` | `"http://localhost:11434"` | Must resolve to localhost; enforced at parse time and re-checked at call time. |
+
+The Ollama OCR runner is **opt-in, and an omitted `ollama.enabled` is not an
+opt-in**. `"auto"` reaches for the runner only after `pdftotext` and Vision
+have both failed on a document; `"true"` puts it in rotation; `"false"` — the
+default — keeps document images away from the daemon entirely. Choosing to
+hand a document to a model is a decision worth writing down, which is the same
+reason `confidential.require_confirmation_on_resolve_for_send` fails closed and
+`classify.model` refuses to guess a model.
+
+`kagaz doctor` distinguishes the two ways this tier can be unusable: **not
+enabled** names the key to set, and **no Ollama server responding at …** means
+the vault opted in and the daemon is missing.
+
+> **Upgrading.** `ollama.enabled` used to default to `"auto"`, so a vault that
+> named an `ollama.model` but never wrote `enabled:` sent scans Vision could
+> not read to the local daemon. Those vaults now skip the Ollama tier. To keep
+> the old behaviour, write it down:
+>
+> ```yaml
+> ocr:
+>   ollama:
+>     enabled: "auto"
+> ```
 
 ## `classify`
 

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 )
 
 // DefaultOllamaPrompt is used for any model without an entry in ollamaPrompts.
@@ -50,7 +52,8 @@ type Ollama struct {
 	Endpoint string
 	// Model is the vision model tag, e.g. "llama3.2-vision:11b".
 	Model string
-	// Enabled is a tri-state: "auto", "true" or "false".
+	// Enabled is a tri-state: config.OCROllamaAuto, OCROllamaOn or
+	// OCROllamaOff. Only the first two are an opt-in; see optedIn.
 	Enabled string
 
 	// client is a test seam; nil means localOnlyClient is used.
@@ -111,7 +114,7 @@ func (o *Ollama) Name() string { return "ollama" }
 // The result is cached for ollamaProbeTTL so that `kagaz doctor`, which asks
 // for availability and then for detail, does not pay the timeout twice.
 func (o *Ollama) Available() bool {
-	if o.Enabled == "false" {
+	if !o.optedIn() {
 		return false
 	}
 	if o.Model == "" {
@@ -130,6 +133,15 @@ func (o *Ollama) Available() bool {
 	o.probeOK = o.probe(base)
 	o.probedAt = time.Now()
 	return o.probeOK
+}
+
+// optedIn reports whether the vault asked for this runner. Only the two
+// affirmative values count, so the zero value -- an Ollama built from a Config
+// that never went through config.Defaults -- reads as "not asked for" rather
+// than as "auto". Sending a document to a model is the expensive, irreversible
+// direction, so the only way to be wrong here is closed.
+func (o *Ollama) optedIn() bool {
+	return o.Enabled == config.OCROllamaAuto || o.Enabled == config.OCROllamaOn
 }
 
 // probe performs the actual GET /api/tags. The caller holds probeMu.
@@ -152,8 +164,15 @@ func (o *Ollama) probe(base string) bool {
 
 // detail explains the runner's state for `kagaz doctor`.
 func (o *Ollama) detail() string {
-	if o.Enabled == "false" {
-		return "disabled in config (ocr.ollama.enabled: false)"
+	// "Not enabled" and "enabled but nothing is listening" are two different
+	// situations with two different fixes, and since ocr.ollama.enabled now
+	// defaults to off, the first is what most vaults see. They must not read
+	// as the same sentence: one asks the user to opt in, the other to start a
+	// daemon.
+	if !o.optedIn() {
+		return "not enabled: ocr.ollama.enabled is " + config.OCROllamaOff +
+			", which is also the default; set it to " + config.OCROllamaAuto +
+			" or " + config.OCROllamaOn + " to send documents to a local vision model"
 	}
 	if o.Model == "" {
 		return "no model configured (ocr.ollama.model)"

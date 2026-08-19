@@ -176,8 +176,8 @@
             "enabled": {
               "type": "string",
               "enum": ["auto", "true", "false"],
-              "description": "Tri-state: \"auto\" tries Ollama only after the cheaper runners fail, \"true\" forces it into rotation, \"false\" disables it.",
-              "default": "apple"
+              "description": "Tri-state: \"auto\" tries Ollama only after the cheaper runners fail, \"true\" forces it into rotation, \"false\" disables it. The default is \"false\", and an omitted key is deliberately not an opt-in: this used to default to \"auto\", which sent document images to whatever local daemon was listening because of a line nobody wrote. Handing a document to a model is a choice the vault has to state, the same way require_confirmation_on_resolve_for_send fails closed and classify.model refuses to guess. A vault that wants the old behaviour writes enabled: \"auto\".",
+              "default": "false"
             },
             "model": {
               "type": "string",

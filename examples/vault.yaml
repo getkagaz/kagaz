@@ -147,9 +147,15 @@ ocr:
   vision_languages:
     - en-US
   ollama:
-    # auto | true | false. "auto" only tries Ollama after pdftotext and
-    # Vision have both failed to produce usable text (e.g. a hard scan).
-    enabled: auto
+    # auto | true | false, default "false". "auto" only tries Ollama after
+    # pdftotext and Vision have both failed to produce usable text (e.g. a
+    # hard scan); "true" keeps it in rotation.
+    #
+    # An omitted key is NOT an opt-in: it means "false", so a vault that never
+    # names Ollama never hands a document image to a daemon. Sending a
+    # document to a model is a choice this file has to state, exactly like
+    # require_confirmation_on_resolve_for_send below.
+    enabled: "false"
     # Required only if you want Ollama in the OCR rotation at all. Some
     # vision models need their exact trained prompt phrase; see
     # docs/model-use.md.

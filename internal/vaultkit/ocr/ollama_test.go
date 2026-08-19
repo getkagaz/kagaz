@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 )
 
 // refusingTransport fails the test if anything tries to open a connection. It
@@ -283,5 +286,117 @@ func TestOllamaDoesNotFollowRedirects(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&offHostHits); got != 0 {
 		t.Fatalf("the redirect target received %d requests, want 0", got)
+	}
+}
+
+// TestExtractorDoesNotReachOllamaWithoutOptIn is the test the config-level one
+// cannot give: ocr.ollama.enabled only matters because of what the extractor
+// does with it, and a vault.yaml with no `ocr:` block must leave the daemon
+// untouched even when it is running with a model loaded.
+//
+// The two subtests share everything but the vault.yaml, so the comparison is
+// exactly the default: "auto" reaches the stub daemon, an absent key does not.
+// Reverting the default to "auto" makes the first subtest fail.
+func TestExtractorDoesNotReachOllamaWithoutOptIn(t *testing.T) {
+	// Vision must be out of the picture, or whether this machine has the
+	// helper decides whether the Ollama tier is reached at all. An override
+	// that does not resolve is reported unavailable, by design.
+	t.Setenv(HelperPathEnv, filepath.Join(t.TempDir(), "no-such-machelper"))
+
+	tests := []struct {
+		name      string
+		yaml      string
+		wantHits  bool
+		wantModel string
+	}{
+		{
+			name:     "no ocr block at all",
+			yaml:     "people:\n  - name: Alex Rao\n",
+			wantHits: false,
+		},
+		{
+			// The case the old default actually harmed: a model is named --
+			// so nothing else stands in the way -- but nobody wrote
+			// `enabled:`, and the document went to the daemon anyway.
+			name:     "model named but enabled absent",
+			yaml:     "people:\n  - name: Alex Rao\nocr:\n  ollama:\n    model: unlimited-ocr\n",
+			wantHits: false,
+		},
+		{
+			name:      "enabled: auto opts in",
+			yaml:      "people:\n  - name: Alex Rao\nocr:\n  ollama:\n    enabled: \"auto\"\n    model: unlimited-ocr\n",
+			wantHits:  true,
+			wantModel: "unlimited-ocr",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&hits, 1)
+				if r.URL.Path == "/api/tags" {
+					_, _ = w.Write([]byte(`{"models":[{"name":"unlimited-ocr"}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"response":"scanned text","done":true}`))
+			}))
+			defer srv.Close()
+
+			cfg, err := config.Parse([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			e := NewExtractor(cfg, "")
+			// Only the address moves: Enabled and Model stay exactly as the
+			// vault.yaml (and its defaults) produced them, which is the thing
+			// under test. The stub is on loopback, so requireLocalhost is
+			// satisfied and cannot be what stops the request.
+			e.Ollama.Endpoint = srv.URL
+
+			path, _ := writeImage(t)
+			res, err := e.Extract(context.Background(), path)
+
+			if got := atomic.LoadInt32(&hits) > 0; got != tc.wantHits {
+				t.Fatalf("daemon contacted = %v, want %v (result %+v, err %v)", got, tc.wantHits, res, err)
+			}
+			if tc.wantHits {
+				if err != nil {
+					t.Fatalf("Extract: %v", err)
+				}
+				if res.Engine != "ollama:"+tc.wantModel {
+					t.Errorf("Engine = %q, want %q", res.Engine, "ollama:"+tc.wantModel)
+				}
+			} else if !errors.Is(err, ErrNoText) {
+				t.Errorf("err = %v, want ErrNoText: with no tier opted in there is nothing to extract", err)
+			}
+		})
+	}
+}
+
+// TestOllamaDetailSeparatesNotEnabledFromNoDaemon pins what `kagaz doctor`
+// reports. Since an omitted ocr.ollama.enabled now means off, "you never asked
+// for this" is the common case and must not read like "your daemon is down":
+// the fixes are opposite (edit vault.yaml vs start Ollama).
+func TestOllamaDetailSeparatesNotEnabledFromNoDaemon(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	cfg, err := config.Parse([]byte("people:\n  - name: Alex Rao\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	notEnabled := NewExtractor(cfg, "").Ollama.detail()
+	noDaemon := (&Ollama{Endpoint: deadURL, Model: "unlimited-ocr", Enabled: config.OCROllamaAuto}).detail()
+
+	if notEnabled == noDaemon {
+		t.Fatalf("both states report %q; doctor cannot tell them apart", notEnabled)
+	}
+	if !strings.Contains(notEnabled, "not enabled") || !strings.Contains(notEnabled, "ocr.ollama.enabled") {
+		t.Errorf("not-enabled detail = %q; it must say it is not enabled and name the key to set", notEnabled)
+	}
+	if !strings.Contains(noDaemon, "no Ollama server responding") {
+		t.Errorf("no-daemon detail = %q; it must point at the daemon, not at the config", noDaemon)
 	}
 }

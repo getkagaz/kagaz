@@ -174,3 +174,75 @@ func TestClassifyModelRejectsRepoPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestOCROllamaDefaultsToOff pins the opt-in. A vault.yaml with no `ocr:` block
+// must not send document images to a local daemon, so the filled-in value is
+// asserted against DefaultOCROllamaEnabled rather than against a literal typed
+// twice -- a literal here would keep passing if the default were flipped back
+// and the constant left behind.
+func TestOCROllamaDefaultsToOff(t *testing.T) {
+	if DefaultOCROllamaEnabled != OCROllamaOff {
+		t.Fatalf("DefaultOCROllamaEnabled = %q; an omitted ocr.ollama.enabled must not opt the vault in", DefaultOCROllamaEnabled)
+	}
+
+	// Both routes into a Config: the in-memory zero value and a real parse.
+	c := &Config{}
+	c.applyDefaults()
+	if c.OCR.Ollama.Enabled != DefaultOCROllamaEnabled {
+		t.Errorf("applyDefaults: ocr.ollama.enabled = %q, want %q", c.OCR.Ollama.Enabled, DefaultOCROllamaEnabled)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("the defaults must validate: %v", err)
+	}
+
+	parsed, err := Parse([]byte("people:\n  - name: Alex Rao\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if parsed.OCR.Ollama.Enabled != DefaultOCROllamaEnabled {
+		t.Errorf("parsed vault with no ocr block: ocr.ollama.enabled = %q, want %q",
+			parsed.OCR.Ollama.Enabled, DefaultOCROllamaEnabled)
+	}
+}
+
+// TestOCROllamaTriStateRoundTrips keeps the three accepted values accepted.
+// Defaulting to off narrows what an *omitted* key means and nothing else:
+// "auto" is still a value the user can choose, and an explicit "false" must
+// survive defaulting rather than be treated as absent.
+func TestOCROllamaTriStateRoundTrips(t *testing.T) {
+	for _, want := range validOCROllamaEnabled {
+		yaml := "people:\n  - name: Alex Rao\nocr:\n  ollama:\n    enabled: \"" + want + "\"\n"
+		c, err := Parse([]byte(yaml))
+		if err != nil {
+			t.Fatalf("Parse(enabled: %q): %v", want, err)
+		}
+		if c.OCR.Ollama.Enabled != want {
+			t.Errorf("ocr.ollama.enabled = %q, want %q", c.OCR.Ollama.Enabled, want)
+		}
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate(enabled: %q): %v", want, err)
+		}
+	}
+}
+
+// TestOCROllamaRejectsUnknownValues pins that the tri-state is still closed and
+// that the rejection names the field and the value. "yes", "on" and "1" are the
+// plausible guesses; reading any of them as an opt-in would be the same silent
+// rewrite of a user's config the classify.engine check exists to prevent.
+func TestOCROllamaRejectsUnknownValues(t *testing.T) {
+	for _, bad := range []string{"yes", "on", "1", "TRUE", "enabled", "  auto"} {
+		c := &Config{}
+		c.applyDefaults()
+		c.OCR.Ollama.Enabled = bad
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("ocr.ollama.enabled %q was accepted, want a rejection", bad)
+			continue
+		}
+		for _, want := range []string{"ocr.ollama.enabled", strconv.Quote(bad), OCROllamaAuto, OCROllamaOn, OCROllamaOff} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not contain %q", err, want)
+			}
+		}
+	}
+}

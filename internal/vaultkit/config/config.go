@@ -108,12 +108,42 @@ type OCR struct {
 }
 
 // OCROllama is the opt-in Ollama OCR runner. Enabled is a tri-state string:
-// "auto", "true" or "false".
+// OCROllamaAuto, OCROllamaOn or OCROllamaOff.
+//
+// "Opt-in" is literal: an absent key means OCROllamaOff, so a vault that never
+// mentions Ollama never hands a document image to a daemon. It used to default
+// to OCROllamaAuto, which opted every such vault in the moment a local daemon
+// happened to have a model -- a document reaching a model because of a line
+// nobody wrote. Every comparable decision here goes the other way
+// (Confidential.ConfirmationRequired fails closed, Classify.Model refuses to
+// guess, requireLocalhost rejects anything off loopback), and this one now
+// does too. OCROllamaAuto remains a value the user can choose; it is no longer
+// a value they can receive.
 type OCROllama struct {
 	Enabled  string `yaml:"enabled"`
 	Model    string `yaml:"model"`
 	Endpoint string `yaml:"endpoint"`
 }
+
+// Accepted values of ocr.ollama.enabled.
+//
+// OCROllamaAuto reaches for the runner only after the cheaper tiers fail;
+// OCROllamaOn puts it in rotation; OCROllamaOff keeps documents away from the
+// daemon entirely. They are strings, not a bool plus a mode, because the key
+// has always been a tri-state in vault.yaml and renaming its values would
+// invalidate files already on disk.
+const (
+	OCROllamaAuto = "auto"
+	OCROllamaOn   = "true"
+	OCROllamaOff  = "false"
+)
+
+var validOCROllamaEnabled = []string{OCROllamaAuto, OCROllamaOn, OCROllamaOff}
+
+// DefaultOCROllamaEnabled is what an omitted ocr.ollama.enabled means. Read it
+// rather than writing "false": a test that types the literal twice passes
+// whether or not the default is the one it meant to assert.
+const DefaultOCROllamaEnabled = OCROllamaOff
 
 // Classify selects and tunes the semantic classifier backend.
 //
@@ -407,8 +437,11 @@ func (c *Config) applyDefaults() {
 	if len(c.OCR.VisionLanguages) == 0 {
 		c.OCR.VisionLanguages = []string{"en-US"}
 	}
+	// An omitted key is not consent. See OCROllama: defaulting this to "auto"
+	// meant a vault that never named Ollama still sent document images to
+	// whatever daemon was listening.
 	if c.OCR.Ollama.Enabled == "" {
-		c.OCR.Ollama.Enabled = "auto"
+		c.OCR.Ollama.Enabled = DefaultOCROllamaEnabled
 	}
 	if c.OCR.Ollama.Endpoint == "" {
 		c.OCR.Ollama.Endpoint = "http://localhost:11434"
@@ -595,10 +628,9 @@ func (c *Config) Validate() error {
 	if err := requireLocalhost(c.OCR.Ollama.Endpoint); err != nil {
 		return fmt.Errorf("ocr.ollama.endpoint: %w", err)
 	}
-	switch c.OCR.Ollama.Enabled {
-	case "auto", "true", "false":
-	default:
-		return fmt.Errorf("ocr.ollama.enabled must be auto, true or false, got %q", c.OCR.Ollama.Enabled)
+	if !contains(validOCROllamaEnabled, c.OCR.Ollama.Enabled) {
+		return fmt.Errorf("ocr.ollama.enabled must be %s, got %q",
+			strings.Join(validOCROllamaEnabled, ", "), c.OCR.Ollama.Enabled)
 	}
 
 	for _, dt := range c.DocTypes {

@@ -147,7 +147,10 @@ func (e *Extractor) Extract(ctx context.Context, path string) (Result, error) {
 		}
 	}
 
-	if e.Ollama.Enabled != "false" && e.Ollama.Available() {
+	// Available() is the whole gate: it returns false unless the vault opted
+	// in (ocr.ollama.enabled defaults to off), so an omitted key never reaches
+	// a daemon even where one is running with the model loaded.
+	if e.Ollama.Available() {
 		res, err := e.Ollama.Extract(ctx, path)
 		if err == nil && strings.TrimSpace(res.Text) != "" {
 			return res, nil

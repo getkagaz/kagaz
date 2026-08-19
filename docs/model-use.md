@@ -36,7 +36,11 @@ model, you know exactly what it is, where it runs, and under what license.
    who already run Ollama and want to point Kagaz at a model of their
    choosing. `classify.model` is that choice, and it is Ollama's alone; it has
    no default, so until you set an Ollama name:tag the tier reports itself
-   unavailable rather than run a model you did not pick.
+   unavailable rather than run a model you did not pick. OCR is opted into
+   separately and just as explicitly: `ocr.ollama.enabled` defaults to
+   `"false"`, so a vault that does not ask for it never sends a document
+   image to the daemon, even where one is running with a vision model
+   loaded.
 
 `classify.engine` names one of four engines, and every model engine ends at the
 deterministic rules tier: **apple** (the default — Apple's on-device model,
