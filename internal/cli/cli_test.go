@@ -1660,3 +1660,95 @@ func appendYAML(t *testing.T, vault, text string) {
 		t.Fatalf("append to %s: %v", vault, err)
 	}
 }
+
+// TestDoctorJSONCarriesPerTierTimeouts is the end-to-end half of
+// classify.TestDescribeReportsEachTiersOwnTimeouts: it pins the *shape* the app
+// binds to, which the package-level test cannot see. The exact durations are
+// pinned there against the constants themselves; what matters here is that they
+// survive the trip through Check into the payload, arrive as integers, and stay
+// per tier.
+//
+// The relation asserted rather than the numbers: a design mockup stated "one
+// classification: 2 min" as a single global fact, which is wrong for apple --
+// the default engine -- by a factor of four. A UI that prints one figure for
+// every tier tells a user to keep waiting on a tier that already gave up, and
+// this assertion is what fails if the tiers are ever collapsed back into one.
+func TestDoctorJSONCarriesPerTierTimeouts(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("KAGAZ_MACHELPER", filepath.Join(t.TempDir(), "absent"))
+
+	vault := initDemo(t)
+	appendYAML(t, vault, "\nclassify:\n  engine: ollama\n  model: qwen2.5:3b\n")
+	out, errw, code := run(t, "--vault", vault, "doctor", "--json")
+	if code != ExitOK && code != ExitFailure {
+		t.Fatalf("doctor exited %d: %s\n%s", code, out, errw)
+	}
+	checks, _ := decode(t, out)["checks"].([]any)
+	byName := map[string]map[string]any{}
+	for _, c := range checks {
+		m := c.(map[string]any)
+		byName[m["name"].(string)] = m
+	}
+
+	// A tier's budget, in ms, insisting on a JSON number: a client that has to
+	// parse "1.5s" is back to reading prose, which is the thing this field and
+	// reason both exist to stop.
+	budget := func(t *testing.T, tier, key string) float64 {
+		t.Helper()
+		check, ok := byName["classify:"+tier]
+		if !ok {
+			t.Fatalf("no classify:%s check ran", tier)
+		}
+		timeouts, ok := check["timeouts"].(map[string]any)
+		if !ok {
+			t.Fatalf("classify:%s carries no timeouts object: %v", tier, check)
+		}
+		v, ok := timeouts[key]
+		if !ok {
+			t.Fatalf("classify:%s timeouts has no %s: %v", tier, key, timeouts)
+		}
+		ms, ok := v.(float64)
+		if !ok {
+			t.Fatalf("classify:%s %s = %#v, want a number of milliseconds", tier, key, v)
+		}
+		return ms
+	}
+
+	apple := budget(t, "apple", "classify_timeout_ms")
+	mlx := budget(t, "mlx", "classify_timeout_ms")
+	ollama := budget(t, "ollama", "classify_timeout_ms")
+	if apple >= mlx || apple >= ollama {
+		t.Errorf("apple's classification budget (%v ms) is not tighter than mlx's (%v) and ollama's (%v); "+
+			"the per-tier field has stopped earning its place", apple, mlx, ollama)
+	}
+	for _, tier := range []string{"apple", "mlx", "ollama"} {
+		if ms := budget(t, tier, "probe_timeout_ms"); ms <= 0 {
+			t.Errorf("classify:%s probe_timeout_ms = %v, want a positive bound", tier, ms)
+		}
+	}
+
+	// Ollama's probe answer is the only one reused on a clock; reporting a TTL
+	// for the helper tiers would invite a countdown that never expires.
+	if ms := budget(t, "ollama", "probe_cache_ttl_ms"); ms <= 0 {
+		t.Errorf("classify:ollama probe_cache_ttl_ms = %v, want a positive TTL", ms)
+	}
+	for _, tier := range []string{"apple", "mlx"} {
+		timeouts := byName["classify:"+tier]["timeouts"].(map[string]any)
+		if v, present := timeouts["probe_cache_ttl_ms"]; present {
+			t.Errorf("classify:%s reports probe_cache_ttl_ms %#v; it caches for the process lifetime", tier, v)
+		}
+	}
+
+	// Absent, not present-and-empty: rules runs no model, so it bounds nothing,
+	// and a client testing for the key must not find an object of zeroes.
+	rules, ok := byName["classify:rules"]
+	if !ok {
+		t.Fatal("no classify:rules check ran")
+	}
+	if v, present := rules["timeouts"]; present {
+		t.Errorf("classify:rules reports timeouts %#v; the key must be absent", v)
+	}
+	if strings.Contains(out, `"timeouts":{}`) {
+		t.Errorf("an empty timeouts object was serialised:\n%s", out)
+	}
+}

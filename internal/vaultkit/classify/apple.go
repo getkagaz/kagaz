@@ -35,6 +35,26 @@ type Apple struct {
 // Name identifies the backend. It matches config.EngineApple.
 func (a *Apple) Name() string { return config.EngineApple }
 
+// classifyBudget resolves Timeout against the default. Classify and timeouts()
+// both read it, so what doctor reports and what Classify enforces cannot drift.
+func (a *Apple) classifyBudget() time.Duration {
+	if a.Timeout > 0 {
+		return a.Timeout
+	}
+	return classifyTimeout
+}
+
+// timeouts reports this tier's deadlines. Apple's classification budget is
+// seconds where the two loading tiers get minutes, which is precisely why the
+// numbers are per tier and why a client stating one global figure is wrong
+// about the default engine.
+func (a *Apple) timeouts() *Timeouts {
+	return &Timeouts{
+		ProbeTimeoutMS:    millis(probeTimeout),
+		ClassifyTimeoutMS: millis(a.classifyBudget()),
+	}
+}
+
 // Available reports whether kagaz-machelper is installed and its Apple
 // Foundation Models backend is usable, by running the helper's fast --probe.
 // A decoded answer is cached for the process lifetime; a timeout is not. It is
@@ -122,11 +142,7 @@ func (a *Apple) Classify(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("%s: %w", ocr.HelperBinary, ocr.ErrNoHelper)
 	}
 
-	timeout := a.Timeout
-	if timeout <= 0 {
-		timeout = classifyTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, a.classifyBudget())
 	defer cancel()
 
 	args := []string{"classify", "--backend", config.EngineApple}

@@ -1323,3 +1323,105 @@ func TestStatusModelIsOmittedRatherThanEmpty(t *testing.T) {
 		t.Errorf("a tier with no model serialised one: %s", b)
 	}
 }
+
+// TestDescribeReportsEachTiersOwnTimeouts pins Status.Timeouts, which exists so
+// a client displays the CLI's deadlines instead of transcribing them. The
+// substance is that the numbers are NOT global: a design that stated "one
+// classification: 2 min" as a single fact was wrong about apple, the default
+// engine, by a factor of four -- and wrong in the direction that tells a user
+// to keep waiting on a tier that has already given up.
+//
+// Every expectation reads the constant rather than a literal, so retuning a
+// timeout moves the expectation with it and this test keeps testing wiring
+// instead of quietly encoding a second copy of the number.
+func TestDescribeReportsEachTiersOwnTimeouts(t *testing.T) {
+	cat := testCatalog(t)
+	chain := chainAll(cat, config.EngineApple, &Apple{}, &MLX{},
+		&Ollama{Endpoint: "http://127.0.0.1:1", Model: "qwen2.5:3b"})
+
+	got := map[string]*Timeouts{}
+	for _, s := range chain.Describe() {
+		got[s.Name] = s.Timeouts
+	}
+
+	want := map[string]Timeouts{
+		config.EngineApple: {
+			ProbeTimeoutMS:    millis(probeTimeout),
+			ClassifyTimeoutMS: millis(classifyTimeout),
+		},
+		config.EngineMLX: {
+			ProbeTimeoutMS:    millis(probeTimeout),
+			ClassifyTimeoutMS: millis(mlxClassifyTimeout),
+		},
+		config.EngineOllama: {
+			ProbeTimeoutMS:    millis(ollamaProbeTimeout),
+			ProbeCacheTTLMS:   millis(ollamaProbeTTL),
+			ClassifyTimeoutMS: millis(ollamaClassifyTimeout),
+		},
+	}
+	for engine, w := range want {
+		if got[engine] == nil {
+			t.Fatalf("%s reports no timeouts at all", engine)
+		}
+		if *got[engine] != w {
+			t.Errorf("%s timeouts = %+v, want %+v", engine, *got[engine], w)
+		}
+	}
+
+	// The whole point of the field, stated as an assertion: the tier a user
+	// gets by default is bounded far tighter than the two they install on
+	// purpose. If these ever became one number, every case above would still
+	// pass while the reason for reporting them per tier had evaporated.
+	if got[config.EngineApple].ClassifyTimeoutMS >= got[config.EngineMLX].ClassifyTimeoutMS {
+		t.Errorf("apple's classification budget (%dms) is no longer tighter than mlx's (%dms); "+
+			"a client may as well hardcode one figure",
+			got[config.EngineApple].ClassifyTimeoutMS, got[config.EngineMLX].ClassifyTimeoutMS)
+	}
+
+	// Only ollama re-probes on a clock. The helper tiers cache a decisive
+	// answer for the process lifetime, so a TTL on them would be a fiction a
+	// client would render as a countdown that never expires.
+	if got[config.EngineOllama].ProbeCacheTTLMS == 0 {
+		t.Error("ollama reports no probe cache TTL; it is the one tier that has one")
+	}
+	for _, engine := range []string{config.EngineApple, config.EngineMLX} {
+		if ttl := got[engine].ProbeCacheTTLMS; ttl != 0 {
+			t.Errorf("%s reports a probe cache TTL of %dms; it caches for the process lifetime", engine, ttl)
+		}
+	}
+
+	// rules runs no model, so it has no deadline to report -- not a zeroed one.
+	if got[config.EngineRules] != nil {
+		t.Errorf("rules reports timeouts %+v; it runs no model", *got[config.EngineRules])
+	}
+}
+
+// TestDescribeReportsAnOverriddenTimeout: the reported classification budget is
+// the one Classify will actually enforce, not the package default. A doctor
+// that read the constant directly would be right only for a Chain nobody had
+// tuned, and would be confidently wrong for one that had been.
+func TestDescribeReportsAnOverriddenTimeout(t *testing.T) {
+	cat := testCatalog(t)
+	chain := chainAll(cat, config.EngineApple, &Apple{Timeout: 7 * time.Second}, nil, nil)
+	for _, s := range chain.Describe() {
+		if s.Name != config.EngineApple {
+			continue
+		}
+		if got := s.Timeouts.ClassifyTimeoutMS; got != 7000 {
+			t.Errorf("apple classify_timeout_ms = %d, want the configured 7000", got)
+		}
+	}
+}
+
+// TestStatusTimeoutsAreOmittedRatherThanEmpty: a client asking whether the key
+// is present and one asking whether a budget is non-zero must reach the same
+// answer, so a tier with no deadlines must not serialise "timeouts": {}.
+func TestStatusTimeoutsAreOmittedRatherThanEmpty(t *testing.T) {
+	b, err := json.Marshal(Status{Name: config.EngineRules, Available: true, Detail: "built in"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if contains(string(b), "timeouts") {
+		t.Errorf("a tier with no timeouts serialised the key: %s", b)
+	}
+}

@@ -50,6 +50,13 @@ type Check struct {
 	// client displays the CLI's answer instead of keeping its own copy of a
 	// pin it cannot see move. See classify.Status.Model.
 	Model string `json:"model,omitempty"`
+	// Timeouts are the deadlines a classifier check's tier enforces, so a
+	// client shows the CLI's numbers instead of hardcoding a copy. They differ
+	// per tier -- apple bounds a classification at 30s where mlx and ollama get
+	// two minutes -- and a UI that prints one figure for all of them is wrong
+	// about the default engine. Absent for a tier that runs no model. See
+	// classify.Timeouts.
+	Timeouts *classify.Timeouts `json:"timeouts,omitempty"`
 }
 
 // DoctorPayload is the `kagaz doctor --json` body.
@@ -267,7 +274,7 @@ func checkClassifiers(cfg *config.Config) []Check {
 
 	for _, s := range chain.Describe() {
 		c := Check{Name: "classify:" + s.Name, Status: CheckOK, Detail: s.Detail,
-			Reason: s.Reason, Model: s.Model}
+			Reason: s.Reason, Model: s.Model, Timeouts: s.Timeouts}
 		if !s.Available {
 			c.Status = CheckWarn
 			if c.Detail == "" {

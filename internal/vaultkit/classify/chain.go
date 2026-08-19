@@ -3,6 +3,7 @@ package classify
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 	"github.com/getkagaz/kagaz/internal/vaultkit/doctypes"
@@ -314,17 +315,19 @@ func (c *Chain) Describe() []Status {
 	out := []Status{{Name: config.EngineRules, Available: true, Detail: "built in"}}
 	if c.Apple != nil {
 		out = append(out, Status{Name: config.EngineApple, Available: c.Apple.Available(),
-			Detail: c.Apple.detail(), Reason: c.Apple.reason()})
+			Detail: c.Apple.detail(), Reason: c.Apple.reason(), Timeouts: c.Apple.timeouts()})
 	}
 	if c.MLX != nil {
 		// The pinned repo regardless of Available: a client asking "what would
 		// MLX load here" is usually asking precisely because it cannot load.
 		out = append(out, Status{Name: config.EngineMLX, Available: c.MLX.Available(),
-			Detail: c.MLX.detail(), Reason: c.MLX.reason(), Model: config.DefaultMLXModel})
+			Detail: c.MLX.detail(), Reason: c.MLX.reason(), Model: config.DefaultMLXModel,
+			Timeouts: c.MLX.timeouts()})
 	}
 	if c.Ollama != nil {
 		out = append(out, Status{Name: config.EngineOllama, Available: c.Ollama.Available(),
-			Detail: c.Ollama.detail(), Reason: c.Ollama.reason(), Model: c.Ollama.Model})
+			Detail: c.Ollama.detail(), Reason: c.Ollama.reason(), Model: c.Ollama.Model,
+			Timeouts: c.Ollama.timeouts()})
 	}
 	return out
 }
@@ -349,4 +352,45 @@ type Status struct {
 	// weights at all, and for an Ollama with no classify.model, where naming a
 	// default the user never chose would be the same invention.
 	Model string `json:"model,omitempty"`
+	// Timeouts are the deadlines this tier enforces, and exist for the same
+	// reason Reason and Model do: a client must never transcribe a value the
+	// CLI owns. They are per tier and they differ -- apple bounds one
+	// classification at thirty seconds where mlx and ollama get two minutes --
+	// so a UI stating one global figure is wrong about the default engine, and
+	// wrong in the direction that makes it look hung. Nil for a tier that runs
+	// no model and therefore has no deadline to report; the key is then absent
+	// rather than an empty object, so "has timeouts" and "has a probe budget"
+	// cannot disagree.
+	Timeouts *Timeouts `json:"timeouts,omitempty"`
 }
+
+// Timeouts is one tier's deadlines, in whole milliseconds.
+//
+// Milliseconds and not a duration string: the rule Reason states -- a client
+// must never pattern-match a human sentence -- applies just as much to "1.5s",
+// which is prose about a number. An integer is the one shape a client cannot
+// misread, and formatting it for a person is the client's job.
+//
+// Each name says what it bounds, because a probe and a classification are
+// different things by two orders of magnitude on the ollama tier and a reader
+// of the JSON must not have to guess which one a bare "timeout" meant.
+type Timeouts struct {
+	// ProbeTimeoutMS bounds one availability probe -- the call Available() and
+	// doctor make -- not the time a probe took.
+	ProbeTimeoutMS int64 `json:"probe_timeout_ms,omitempty"`
+	// ProbeCacheTTLMS is how long one probe answer is reused before the tier is
+	// asked again. It is not a deadline on anything: it is why a tier can go on
+	// reporting "unreachable" for a moment after the daemon starts. Only the
+	// ollama tier caches on a clock; the helper tiers cache a decisive answer
+	// for the process lifetime and so report none.
+	ProbeCacheTTLMS int64 `json:"probe_cache_ttl_ms,omitempty"`
+	// ClassifyTimeoutMS bounds one document's classification, after which the
+	// tier degrades to rules. This is the number a UI needs to decide how long
+	// a spinner may honestly keep spinning.
+	ClassifyTimeoutMS int64 `json:"classify_timeout_ms,omitempty"`
+}
+
+// millis converts a duration for the wire. Every deadline this package holds
+// is a whole number of milliseconds, so nothing is lost, and an integer field
+// cannot acquire a unit suffix the way a formatted string does.
+func millis(d time.Duration) int64 { return int64(d / time.Millisecond) }

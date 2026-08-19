@@ -94,6 +94,27 @@ type Ollama struct {
 // Name identifies the backend. It matches config.EngineOllama.
 func (o *Ollama) Name() string { return config.EngineOllama }
 
+// classifyBudget resolves Timeout against the default, so doctor reports the
+// deadline Classify will actually enforce rather than a second copy of it.
+func (o *Ollama) classifyBudget() time.Duration {
+	if o.Timeout > 0 {
+		return o.Timeout
+	}
+	return ollamaClassifyTimeout
+}
+
+// timeouts reports this tier's deadlines. Ollama is the only tier that answers
+// all three: its probe is a socket rather than a process launch, so it is two
+// orders of magnitude tighter than the helpers', and it is the only tier whose
+// availability answer is reused for a window a client may want to explain.
+func (o *Ollama) timeouts() *Timeouts {
+	return &Timeouts{
+		ProbeTimeoutMS:    millis(ollamaProbeTimeout),
+		ProbeCacheTTLMS:   millis(ollamaProbeTTL),
+		ClassifyTimeoutMS: millis(o.classifyBudget()),
+	}
+}
+
 // engine is the string recorded in Result.Engine.
 func (o *Ollama) engine() string { return config.EngineOllama + ":" + o.Model }
 
@@ -253,11 +274,7 @@ func (o *Ollama) Classify(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("ollama: encoding request: %w", err)
 	}
 
-	timeout := o.Timeout
-	if timeout <= 0 {
-		timeout = ollamaClassifyTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, o.classifyBudget())
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/generate", bytes.NewReader(body))

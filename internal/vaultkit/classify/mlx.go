@@ -42,6 +42,25 @@ type MLX struct {
 // Name identifies the backend. It matches config.EngineMLX.
 func (m *MLX) Name() string { return config.EngineMLX }
 
+// classifyBudget resolves Timeout against the default, for the same reason
+// Apple's does: doctor and Classify must not be able to disagree.
+func (m *MLX) classifyBudget() time.Duration {
+	if m.Timeout > 0 {
+		return m.Timeout
+	}
+	return mlxClassifyTimeout
+}
+
+// timeouts reports this tier's deadlines. The probe budget is the shared one
+// -- both helpers pay the same cold-start cost -- while the classification
+// budget is four times Apple's, because these weights are loaded from disk.
+func (m *MLX) timeouts() *Timeouts {
+	return &Timeouts{
+		ProbeTimeoutMS:    millis(probeTimeout),
+		ClassifyTimeoutMS: millis(m.classifyBudget()),
+	}
+}
+
 // engine is the string recorded in Result.Engine: "mlx:" plus the model's
 // basename, so "mlx-community/Qwen2.5-3B-Instruct-4bit" is reported as
 // "mlx:Qwen2.5-3B-Instruct-4bit".
@@ -132,11 +151,7 @@ func (m *MLX) Classify(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("%s: %w", MLXHelperBinary, ocr.ErrNoHelper)
 	}
 
-	timeout := m.Timeout
-	if timeout <= 0 {
-		timeout = mlxClassifyTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, m.classifyBudget())
 	defer cancel()
 
 	args := []string{"classify", "--backend", config.EngineMLX, "--model", config.DefaultMLXModel}
