@@ -1,9 +1,18 @@
 # Contributing to Kagaz
 
-Thanks for considering a contribution. Kagaz is young (pre-1.0) and its
-conventions are still settling, so an issue or a discussion before a large
-PR is genuinely useful — it's much cheaper to align on approach before code
-than after.
+Thanks for considering a contribution.
+
+**Kagaz is open core.** This repository — the CLI, the MCP server and the
+`machelper` binaries — is MIT-licensed and free, and stays that way. A separate
+paid, closed-source macOS app is built on top of it, and its source is not
+here. Saying so up front matters: contributions you make under MIT can appear
+in a commercial product, which is what MIT permits and what you should know
+before you start. Nothing documented in the README is withheld or degraded to
+sell that app.
+
+Kagaz is young (pre-1.0) and its conventions are still settling, so an issue or
+a discussion before a large PR is genuinely useful — it's much cheaper to align
+on approach before code than after.
 
 ## Build and test
 
@@ -92,8 +101,9 @@ requirements** — don't assume they're the same:
   `DEVELOPER_DIR` is not needed for `machelper/` at all — that package
   builds correctly under Command Line Tools alone.
 
-(`app/`, the planned SwiftUI menu-bar app, is an empty placeholder directory
-as of this writing — nothing to build there yet.)
+(Kagaz for Mac, the SwiftUI menu-bar app, is a separate paid, closed-source
+product and is not part of this repository — there is nothing to build for it
+here.)
 
 ## Package layout
 

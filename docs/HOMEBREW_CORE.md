@@ -39,13 +39,13 @@ indefinitely — but if it's ever pursued:
 
 ## Signing, notarization and the Cask (menu-bar app)
 
-Separate from the CLI formula: `app/` (the SwiftUI menu-bar app) needs
-Apple code-signing and notarization, and a Homebrew Cask, before it can be
-distributed as `Kagaz.app`. Both need an **Apple Developer Program account**,
-which this project does not currently have configured. This is a
-human-gated step: `build-app.sh` produces an unsigned, unnotarized
-`Kagaz.app` locally today, and no cask exists in the tap. Nothing in this
-repository should be read as claiming otherwise.
+Separate from the CLI formula, and from this repository: **Kagaz for Mac** is a
+paid, closed-source app developed elsewhere. It needs Apple code-signing and
+notarization before it can be distributed as `Kagaz.app`, and both need an
+**Apple Developer Program account** which is not yet configured. A Homebrew
+Cask for it would live in the `getkagaz/kagaz` tap alongside these formulae and
+does not exist yet. Nothing in this repository should be read as claiming
+otherwise, and nothing here depends on the app.
 
 ## What "done" will look like
 

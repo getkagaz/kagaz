@@ -20,3 +20,10 @@
 # machelper-mlx pins the MLX stack -- losing that lockfile would cost build
 # reproducibility. Commit it like any other lockfile.
 .swiftpm/
+
+# Never commit secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12

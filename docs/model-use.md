@@ -90,8 +90,14 @@ before you run `kagaz model pull` for it, same as installing any other
 third-party model.
 
 The default MLX model, `mlx-community/Qwen2.5-3B-Instruct-4bit`, is a
-community re-quantization of Qwen2.5-3B-Instruct; consult the model's page
-on Hugging Face for its current license terms.
+community re-quantization of Qwen2.5-3B-Instruct. **Note that the 3B size is
+not Apache-2.0 like most of the Qwen2.5 family** — it ships under the separate
+Qwen Research/Community licence, whose terms are more restrictive. Kagaz
+redistributes no weights, so this creates no obligation for Kagaz itself, but
+do not read "MIT project" as "MIT model": if you are using Kagaz commercially,
+read that licence before enabling the MLX tier, or point `classify.model` at a
+model whose terms you have checked. Consult the model's page on Hugging Face
+for the current text.
 
 ## Confidentiality
 
