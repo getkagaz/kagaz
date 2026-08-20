@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload the built site
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
 
   deploy:
     needs: build
