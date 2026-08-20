@@ -9,10 +9,26 @@ import (
 	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
 
-// classifyTimeout bounds one classification. An on-device model that has not
-// answered in this long is a hang, and a hang must degrade to rules rather than
-// stall ingest.
-const classifyTimeout = 30 * time.Second
+// classifyTimeout bounds one classification, after which the tier degrades to
+// rules rather than stalling ingest.
+//
+// It was 30s, on the premise that an on-device model quiet for that long has
+// hung. Measurement says otherwise: over 11 consecutive classifications of one
+// short statement against a 977-character doctype spec, Apple's Foundation
+// Models returned in 4.5s at the median and 4.5-4.7s once warm, but with a long
+// tail -- 13s, 14s, 19s, 22s, and two answers at 51s and 60s. Two of eleven
+// exceeded the old budget, and the 60s one arrived after several warm calls, so
+// this is not a cold-start effect that goes away.
+//
+// Those slow calls returned correct answers. Killing them reported a document
+// as unclassifiable when the tier simply had not finished, which is what made a
+// first-run SKIP look like a fact about the file.
+//
+// 90s clears the slowest observed answer with room, and stays strictly under
+// the two-minute budgets mlx and ollama use -- an ordering doctor's own test
+// asserts, because the tier needing no download should be the one that gives up
+// first.
+const classifyTimeout = 90 * time.Second
 
 // Apple runs Apple's Foundation Models through kagaz-machelper. It needs no
 // downloaded weights, is the fastest semantic tier, and requires macOS 26 --
