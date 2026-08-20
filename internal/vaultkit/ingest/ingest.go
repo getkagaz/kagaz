@@ -143,6 +143,14 @@ type Proposal struct {
 	// directly. They are shown in the preview so an absent field is explained
 	// rather than silent.
 	DroppedFields []classify.DroppedField `json:"dropped_fields,omitempty"`
+	// Degraded names a semantic tier that was asked and did not answer, so
+	// this proposal came from the tier below it. Nil is the normal case.
+	//
+	// Without it "unclassified" reads as a finding about the document, when
+	// it can mean the classifier never replied -- a timeout on a cold model,
+	// a crashed helper. The two need different actions from the reader, so
+	// they are not allowed to look the same.
+	Degraded *classify.Degradation `json:"degraded,omitempty"`
 	// Text is the extracted text. Execute truncates it into the sidecar.
 	Text string `json:"-"`
 
@@ -418,10 +426,18 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string, ov Overrides) (P
 	prop.Classifier = cls.Engine
 	prop.Fields = cls.Fields
 	prop.DroppedFields = cls.Dropped
+	prop.Degraded = cls.Degraded
 	prop.Why.DocType = Reason{
 		Value:  cls.DocType,
 		Source: SourceClassifier,
 		Detail: fmt.Sprintf("classified as %q by the %s tier with confidence %.2f", cls.DocType, cls.Engine, cls.Confidence),
+	}
+	if cls.Degraded != nil {
+		// Named before the answer it produced: the reader needs to know the
+		// configured tier is not the one that spoke.
+		prop.Why.DocType.Detail = fmt.Sprintf(
+			"the %s tier did not answer (%s), so this came from the %s tier instead: %s",
+			cls.Degraded.Engine, cls.Degraded.Reason, cls.Engine, prop.Why.DocType.Detail)
 	}
 	if ov.DocType != "" {
 		p.applyDocTypeOverride(&prop, ov.DocType, cls)
@@ -433,6 +449,19 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string, ov Overrides) (P
 			"filing it under a guessed category would be inventing one. Say what it is with " +
 			"`kagaz ingest --set-doctype <name>`, file it by hand with `kagaz move`, " +
 			"or add a doctype to vault.yaml."
+		if cls.Degraded != nil {
+			// A different sentence, not a prefix on the one above: this is the
+			// difference between "kagaz read this and could not tell" and
+			// "kagaz never got an answer". Only the second is worth retrying,
+			// and only the second points at the engine rather than the file,
+			// so telling the user to add a doctype would be the wrong advice.
+			prop.SkipReason = fmt.Sprintf(
+				"the %s tier did not answer (%s), so only the %s tier read this document, and it "+
+					"matched nothing. Nothing here says the document is unclassifiable -- the "+
+					"engine that would have judged it never replied. Run `kagaz doctor` and try "+
+					"again; if it keeps failing, `--set-doctype <name>` files it without a model.",
+				cls.Degraded.Engine, cls.Degraded.Reason, cls.Engine)
+		}
 		prop.Why.DocType.Detail = fmt.Sprintf("no tier reached the confidence threshold; the %s tier returned %s", cls.Engine, doctypes.Unclassified)
 		return prop, nil
 	}

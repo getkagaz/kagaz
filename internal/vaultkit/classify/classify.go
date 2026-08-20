@@ -116,6 +116,28 @@ type Result struct {
 	// "apple" | "rules" | "mlx:<model basename>" | "ollama:<model>". It lands
 	// in the sidecar's `classifier` field.
 	Engine string
+	// Degraded names a semantic tier that was asked and did not answer, when
+	// the result therefore came from the tier below it. Nil is the normal
+	// case, including a model that read the document and declined it.
+	//
+	// It exists for the same reason as Dropped: so a caller can explain an
+	// absence rather than leave a silent hole. Without it, "unclassified"
+	// reads as a statement about the document -- kagaz looked and could not
+	// tell -- when it may mean nothing looked at all.
+	Degraded *Degradation
+}
+
+// Degradation is a tier that failed, in its own words.
+//
+// Reason is the backend's error text, not a category: a timeout, a crashed
+// helper and a malformed answer are different problems with different fixes,
+// and flattening them into "unavailable" is what made the original silence
+// hard to diagnose.
+type Degradation struct {
+	// Engine is the tier that failed: "apple", "mlx", "ollama".
+	Engine string `json:"engine"`
+	// Reason is the error the backend returned.
+	Reason string `json:"reason"`
 }
 
 // Classifier is one classification backend.

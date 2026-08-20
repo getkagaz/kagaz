@@ -125,24 +125,39 @@ func (c *Chain) Classify(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
+	var degraded *Degradation
 	if semantic != nil {
-		if res, ok := c.trySemantic(ctx, semantic, req, cat); ok {
+		res, ok, failure := c.trySemantic(ctx, semantic, req, cat)
+		if ok {
 			return res, nil
 		}
+		degraded = failure
 	}
-	return c.rulesResult(ctx, req, cat), nil
+	res := c.rulesResult(ctx, req, cat)
+	// The rules answer is the same either way; what changes is whether the
+	// caller can say the tier above it never answered.
+	res.Degraded = degraded
+	return res, nil
 }
 
-// trySemantic runs a model backend and validates its answer. The bool reports
-// whether the answer was accepted; false means "fall back to rules", and the
-// reason is deliberately not surfaced as an error, because none of these
-// conditions should fail an ingest.
-func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request, cat *doctypes.Catalog) (Result, bool) {
+// trySemantic runs a model backend and validates its answer.
+//
+// The bool reports whether the answer was accepted; false means "fall back to
+// rules". None of these conditions fails an ingest -- a hung or broken tier
+// must degrade rather than stall -- but the third return says which of them
+// happened, and it is nil unless the tier genuinely failed.
+//
+// The distinction matters to the caller: a model that reads a document and
+// answers "none of these fit" has told you something about the document, while
+// a model that timed out has told you nothing at all. Both used to end at the
+// same "could not be determined".
+func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request, cat *doctypes.Catalog) (Result, bool, *Degradation) {
 	raw, err := backend.Classify(ctx, req)
 	if err != nil {
 		// Structured helper error, unknown contract, malformed JSON, timeout,
-		// non-zero exit: all the same from here.
-		return Result{}, false
+		// non-zero exit: the tier did not answer, and the reason travels with
+		// the fallback so somebody can act on it.
+		return Result{}, false, &Degradation{Engine: backend.Name(), Reason: err.Error()}
 	}
 	if declined(raw) {
 		// The model used its escape hatch: it was offered doctypes.Unclassified
@@ -151,12 +166,13 @@ func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request
 		// it would otherwise look like. Rules still get their turn -- a keyword
 		// or a machine-readable zone can recognise a document the model could
 		// not -- and an unmatched rules tier lands on Unclassified anyway.
-		return Result{}, false
+		return Result{}, false, nil
 	}
 	res, ok := validate(cat, raw, c.MinConfidence)
 	if !ok {
-		// Unknown doctype, or below min_confidence.
-		return Result{}, false
+		// Unknown doctype, or below min_confidence. The tier answered; the
+		// answer was not usable. That is not a degradation to report.
+		return Result{}, false, nil
 	}
 	// Deterministic extraction stays authoritative for structured fields; the
 	// model's fields only fill gaps the catalog has no template for, and only
@@ -167,7 +183,7 @@ func (c *Chain) trySemantic(ctx context.Context, backend Classifier, req Request
 	// is unconditional -- no setting can switch the catalog's regexes off and
 	// quietly empty invoice_number, amount and every date out of a sidecar.
 	res.Fields, res.Dropped = mergeFields(cat.ExtractFields(res.DocType, req.Text), raw.Fields, req.Text)
-	return res, true
+	return res, true, nil
 }
 
 // rulesResult runs the deterministic tier and applies the same validation. An

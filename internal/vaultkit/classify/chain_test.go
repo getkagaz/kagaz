@@ -1425,3 +1425,65 @@ func TestStatusTimeoutsAreOmittedRatherThanEmpty(t *testing.T) {
 		t.Errorf("a tier with no timeouts serialised the key: %s", b)
 	}
 }
+
+// TestChainRecordsWhyItFellBack is the fix for a silent degradation.
+//
+// trySemantic discarded the backend's error, so a tier that timed out, crashed
+// or returned nonsense was indistinguishable from a tier that read the document
+// and honestly said "none of these doctypes fit". Both surfaced to the user as
+// "the document type could not be determined" -- a statement about the
+// document, made when nothing had actually read it.
+//
+// That is the reason a first-run Apple Vision timeout could not be diagnosed
+// from kagaz's own output: kagaz knew the tier had failed and did not say.
+// Falling back to rules stays correct; staying quiet about why does not.
+func TestChainRecordsWhyItFellBack(t *testing.T) {
+	cat := testCatalog(t)
+
+	t.Run("a failing tier is named, with its reason", func(t *testing.T) {
+		c := chainWith(cat, config.EngineApple,
+			appleWith(t, "", errors.New("kagaz-machelper: timed out")))
+		res, err := c.Classify(context.Background(), Request{Text: invoiceText})
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		if res.Engine != config.EngineRules {
+			t.Fatalf("engine = %q, want the rules fallback", res.Engine)
+		}
+		if res.Degraded == nil {
+			t.Fatal("the rules answer does not record that apple was asked and failed")
+		}
+		if res.Degraded.Engine != config.EngineApple {
+			t.Errorf("Degraded.Engine = %q, want %q", res.Degraded.Engine, config.EngineApple)
+		}
+		if !strings.Contains(res.Degraded.Reason, "timed out") {
+			t.Errorf("Degraded.Reason = %q, want the backend's own words", res.Degraded.Reason)
+		}
+	})
+
+	// The distinction the old code lost. A model that answers "unclassified"
+	// has read the document; there is nothing to report about the tier.
+	t.Run("a tier that declines is not a degradation", func(t *testing.T) {
+		c := chainWith(cat, config.EngineApple,
+			appleWith(t, "classify_declined.json", nil))
+		res, err := c.Classify(context.Background(), Request{Text: invoiceText})
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		if res.Degraded != nil {
+			t.Errorf("a declining tier was reported as degraded: %+v", res.Degraded)
+		}
+	})
+
+	t.Run("a healthy tier records nothing", func(t *testing.T) {
+		c := chainWith(cat, config.EngineApple,
+			appleWith(t, "classify_invoice.json", nil))
+		res, err := c.Classify(context.Background(), Request{Text: invoiceText})
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		if res.Degraded != nil {
+			t.Errorf("a healthy tier was reported as degraded: %+v", res.Degraded)
+		}
+	})
+}
