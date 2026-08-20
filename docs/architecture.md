@@ -103,6 +103,13 @@ All mutating and reasoning logic lives under `internal/vaultkit/`:
 - **`models`** — downloads and verifies MLX model weights for `kagaz model
   pull`, the only code in the entire codebase permitted to reach the network.
 
+## The `--json` envelope
+
+Every command emits the same JSON container, and it is now decoded by clients
+that do not ship from this repository. Its shape, its compatibility rule and
+its version-skew handling are specified in
+[the JSON envelope contract](json-envelope-contract.md).
+
 ## Propose → preview → approve → execute-with-manifest
 
 No Kagaz command silently changes a vault. Every mutating operation:
