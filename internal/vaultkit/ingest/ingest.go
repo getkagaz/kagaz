@@ -457,12 +457,21 @@ func (p *Pipeline) analyzeOne(ctx context.Context, path string, ov Overrides) (P
 			// so telling the user to add a doctype would be the wrong advice.
 			prop.SkipReason = fmt.Sprintf(
 				"the %s tier did not answer (%s), so only the %s tier read this document, and it "+
-					"matched nothing. Nothing here says the document is unclassifiable -- the "+
+					"matched nothing. Nothing here says the document is unclassifiable \u2014 the "+
 					"engine that would have judged it never replied. Run `kagaz doctor` and try "+
 					"again; if it keeps failing, `--set-doctype <name>` files it without a model.",
 				cls.Degraded.Engine, cls.Degraded.Reason, cls.Engine)
 		}
-		prop.Why.DocType.Detail = fmt.Sprintf("no tier reached the confidence threshold; the %s tier returned %s", cls.Engine, doctypes.Unclassified)
+		// "No tier reached the threshold" is only true when every tier
+		// answered. When one of them never did, saying so would report a
+		// judgement that was never made.
+		if cls.Degraded != nil {
+			prop.Why.DocType.Detail = fmt.Sprintf(
+				"the %s tier did not answer (%s); the %s tier ran in its place and returned %s",
+				cls.Degraded.Engine, cls.Degraded.Reason, cls.Engine, doctypes.Unclassified)
+		} else {
+			prop.Why.DocType.Detail = fmt.Sprintf("no tier reached the confidence threshold; the %s tier returned %s", cls.Engine, doctypes.Unclassified)
+		}
 		return prop, nil
 	}
 
