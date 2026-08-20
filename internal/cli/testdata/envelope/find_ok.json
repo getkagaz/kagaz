@@ -1,0 +1,13 @@
+{
+  "command": "find",
+  "count": 2,
+  "results": [
+    "a",
+    "b"
+  ],
+  "schema_version": 1,
+  "status": "ok",
+  "warnings": [
+    "a warning"
+  ]
+}
