@@ -157,6 +157,11 @@ Copy the two binaries somewhere on your `PATH`. `kagaz` alone is a working
 vault manager; the Swift helper and `poppler` (`brew install poppler`) each
 add an optional tier, and `kagaz doctor` reports which ones it can see.
 
+`kagaz-mcp` is the second binary only because MCP clients name a binary
+rather than a subcommand — it is `kagaz mcp` under another name, and you
+need it only if you want an agent to talk to a vault. See
+[Wiring the MCP server into a client](agents.md#wiring-the-mcp-server-into-a-client).
+
 The Swift helper needs a separate build. Command Line Tools alone is enough
 — `machelper` needs no macro plugin and no full Xcode install, for the
 reason explained above:
