@@ -18,6 +18,11 @@ swift build -c release
 The binary lands at `.build/release/kagaz-machelper-mlx` and the Metal shader library
 beside it at `.build/release/mlx.metallib`.
 
+Both steps need **Xcode's** toolchain, not just the Command Line Tools. If `xcode-select -p`
+points at `/Library/Developer/CommandLineTools`, prefix both with
+`export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` — see
+[Toolchain](#toolchain) for why, and for what the failure looks like when you do not.
+
 ### Why the second step exists
 
 **`swift build` alone produces a binary that cannot run a single MLX operation.** SwiftPM
@@ -57,24 +62,41 @@ same directory as `kagaz-machelper-mlx`** and stays with it. mlx finds the direc
 `dladdr`, which resolves symlinks, so a symlinked launcher still points at the real
 install directory.
 
+<a id="toolchain"></a>
 **Toolchain.** No macro plugin is used, so nothing here *requires* Xcode. But unlike
 `machelper`, this package compiles MLX's bundled **C++** sources, which need a complete
 libc++ header set. A CommandLineTools installation with an incomplete
-`/Library/Developer/CommandLineTools/usr/include/c++/v1` fails with
-`fatal error: 'cstdlib' file not found` — a broken CLT install rather than a code problem.
-Check it with:
+`/Library/Developer/CommandLineTools/usr/include/c++/v1` fails on whichever standard
+header the first translation unit reaches — `'cassert' file not found`, `'cmath'`, `'map'`,
+`'cstdlib'` — several at once, since the C++ sources compile in parallel. It is a broken
+CLT install rather than a code problem. Check it with:
 
 ```sh
 printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
 ```
 
-If that fails, either reinstall the Command Line Tools
-(`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`) or build with
-Xcode's toolchain:
+If that fails, build against Xcode's toolchain:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -c release
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+swift build -c release
+./Scripts/build-metallib.sh -c release
 ```
+
+**Set it for both steps.** `DEVELOPER_DIR` is what step 2 needs anyway — `xcrun metal`
+ships only with Xcode — so exporting it once covers the build and the shaders. Setting it
+inline on `swift build` alone leaves the shader step to fail separately, with its own
+message saying the same thing.
+
+**Having Xcode installed is not enough.** If `xcode-select -p` prints
+`/Library/Developer/CommandLineTools`, SwiftPM uses the CLT headers no matter what is in
+`/Applications`, and the build fails exactly as it does on a machine with no Xcode at all.
+`DEVELOPER_DIR` overrides that for one command without `sudo` and without changing the
+machine's selected toolchain, which is why it is the first thing to reach for. Making it
+permanent is `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`; reinstalling
+the Command Line Tools
+(`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`) also works and
+is the only option when Xcode is genuinely absent.
 
 ### Packaging
 
