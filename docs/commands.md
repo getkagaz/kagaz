@@ -260,10 +260,10 @@ here" is asked precisely on a machine where it cannot yet run — and
 |---|---|---|---|---|---|
 | `probe_timeout_ms` | one availability probe (not how long one took) | 20000 | 20000 | 1500 | — |
 | `probe_cache_ttl_ms` | how long one probe answer is reused before re-probing | — | — | 5000 | — |
-| `classify_timeout_ms` | one document's classification, after which the tier degrades to rules | 30000 | 120000 | 120000 | — |
+| `classify_timeout_ms` | one document's classification, after which the tier degrades to rules | 90000 | 120000 | 120000 | — |
 
 The numbers are **per tier and they differ**: `apple`, the default engine,
-bounds a classification at 30s where the two loading tiers get two minutes.
+bounds a classification at 90s where the two loading tiers get two minutes.
 A UI that states one global "2 min" is wrong about the engine most people
 run, and wrong in the direction that keeps a spinner going long after the
 tier gave up. `rules` runs no model, so it reports no `timeouts` key at all
