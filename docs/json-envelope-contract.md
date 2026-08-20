@@ -1,5 +1,5 @@
 ---
-title: The --json envelope contract
+title: The JSON envelope contract
 ---
 
 # The `--json` envelope contract
