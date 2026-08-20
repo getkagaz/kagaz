@@ -254,6 +254,118 @@ var filenameNoise = map[string]bool{
 // requires an identifier and a blank there would fail the whole proposal.
 const UnknownIdentifier = "Untitled"
 
+// rankableFields keys the extracted fields the way identifierFieldOrder names
+// them, so a field is found however the extractor happened to spell it.
+//
+// Field names do not arrive in one shape. The catalog's regex extraction emits
+// snake_case ("policy_number"), while a model reporting the fields it found
+// returns them as the document writes them ("Policy Number", "Issuer"). The
+// lookup used to be a plain map index, so the second kind was silently
+// invisible: a correctly extracted issuer fell through to the file name and
+// came back as "Untitled". Losing a fact the document actually stated is worse
+// than any ranking mistake this table could make.
+//
+// The last spelling wins on collision, which is arbitrary but only reachable
+// when one extractor emitted the same field twice under different spellings.
+func rankableFields(fields map[string]string) map[string]string {
+	out := make(map[string]string, len(fields))
+	for k, v := range fields {
+		out[normalizeFieldName(k)] = v
+	}
+	return out
+}
+
+// normalizeFieldName reduces a field name to lower snake_case: "Policy Number",
+// "policy-number" and "POLICY_NUMBER" all become "policy_number".
+func normalizeFieldName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	underscore := true // leading separators are dropped
+	for _, r := range strings.ToLower(name) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			underscore = false
+			continue
+		}
+		if !underscore {
+			b.WriteByte('_')
+			underscore = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "_")
+}
+
+// identifierPlaceholders are values that name the absence of an answer. A model
+// asked for an issuer it cannot find will often supply one of these rather than
+// nothing, and filing it would state as fact that the document identifies
+// itself as "Unknown".
+var identifierPlaceholders = map[string]bool{
+	"unknown": true, "unknwon": true, "none": true, "n a": true, "na": true,
+	"nil": true, "null": true, "untitled": true, "unnamed": true,
+	"not specified": true, "not stated": true, "not provided": true,
+	"not applicable": true, "unspecified": true, "unavailable": true,
+	"no issuer": true, "issuer": true, "tbd": true, "xxx": true,
+}
+
+// trimTrailingDoctype removes the doctype when it trails a candidate
+// identifier, and only then.
+//
+// The doctype is already its own segment of the filename, so an "issuer" of
+// "Electricity Bill" on a bill would produce
+// "Bill_Alex-Rao_Electricity-Bill_2026" -- spending the one free-text segment
+// repeating the segment before it. Models produce these readily, naming the
+// kind of document when asked who issued it.
+//
+// The trailing restriction is what makes this safe, and dropping the doctype's
+// words individually is not. "Insurance" and "Bank" are doctype words AND the
+// ends of real company names: word-by-word removal turns "Northwind Insurance"
+// into "Northwind", losing the issuer's actual name on a correct extraction,
+// which is a worse outcome than the repetition it set out to fix. Matching the
+// whole phrase at the end leaves "Northwind Insurance" alone (it does not end
+// with "insurance policy") while still catching "Electricity Bill" and
+// "Northwind Insurance Policy".
+//
+// A leading doctype is left alone too: "Passport Office" is the issuer of a
+// passport, not a restatement of it.
+func trimTrailingDoctype(candidate, docType string) string {
+	phrase := strings.Fields(normalizeForMatch(conventions.TitleCase(docType)))
+	if len(phrase) == 0 {
+		phrase = strings.Fields(normalizeForMatch(docType))
+	}
+	if len(phrase) == 0 {
+		return candidate
+	}
+
+	tokens := strings.Fields(candidate)
+	if len(tokens) < len(phrase) {
+		return candidate
+	}
+	tail := tokens[len(tokens)-len(phrase):]
+	for i, want := range phrase {
+		if normalizeForMatch(tail[i]) != want {
+			return candidate
+		}
+	}
+	return strings.Join(tokens[:len(tokens)-len(phrase)], " ")
+}
+
+// refuseIdentifier reports why a candidate identifier is not usable, or "" when
+// it is.
+//
+// A placeholder is an extractor saying, in words, that it does not know.
+// Filing one would state as fact that the document identifies itself as
+// "Unknown".
+func refuseIdentifier(candidate string) string {
+	norm := normalizeForMatch(candidate)
+	if norm == "" {
+		return "it contains nothing usable"
+	}
+	if identifierPlaceholders[norm] {
+		return "it names the absence of an answer rather than an issuer"
+	}
+	return ""
+}
+
 // inferIdentifier takes the identifier from the strongest extracted issuer
 // field, else from a cleaned version of the source filename.
 //
@@ -263,10 +375,29 @@ const UnknownIdentifier = "Untitled"
 // "scan_2024-03-02_alex_acme corp invoice.pdf" yields "Acme Corp" rather than
 // repeating half the filename back into the new one.
 func inferIdentifier(fields map[string]string, path, docType string, owners []string) (string, Reason) {
+	byRank := rankableFields(fields)
 	for _, name := range identifierFieldOrder {
-		v := strings.TrimSpace(fields[name])
+		v := strings.TrimSpace(byRank[name])
 		if v == "" {
 			continue
+		}
+		if why := refuseIdentifier(v); why != "" {
+			// Skipped, not returned: a weaker field is still a fact from the
+			// document, and beats anything cleaned out of the file name.
+			continue
+		}
+		trimmed := strings.TrimSpace(trimTrailingDoctype(v, docType))
+		if trimmed == "" {
+			continue // the field only restated the doctype
+		}
+		if trimmed != v {
+			return trimmed, Reason{
+				Value:  trimmed,
+				Source: SourceField,
+				Detail: fmt.Sprintf(
+					"identifier %q: from the extracted %s field %q, with the doctype word dropped so the name does not repeat it",
+					trimmed, name, v),
+			}
 		}
 		return v, Reason{
 			Value:  v,

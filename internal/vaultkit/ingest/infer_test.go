@@ -299,6 +299,97 @@ func TestInferIdentifier(t *testing.T) {
 			want:       "Globex",
 			wantSource: SourceFilename,
 		},
+		// Field names do not arrive in one shape. The catalog's own regex
+		// extraction emits snake_case, while a model naming the fields it found
+		// returns them as the document writes them -- "Issuer", "Policy
+		// Number". A case-sensitive map lookup silently discarded the second
+		// kind, so a correctly extracted issuer became "Untitled".
+		{
+			name:       "a title-cased field name is still an issuer",
+			fields:     map[string]string{"Issuer": "GLOBEX CORPORATION"},
+			path:       "/in/scanned contract.png",
+			docType:    "contract",
+			want:       "GLOBEX CORPORATION",
+			wantSource: SourceField,
+		},
+		{
+			name:       "a spaced field name matches its snake_case rank",
+			fields:     map[string]string{"Policy Number": "POL-2026-77431"},
+			path:       "/in/scan.png",
+			docType:    "insurance-policy",
+			want:       "POL-2026-77431",
+			wantSource: SourceField,
+		},
+		// An identifier that only restates the doctype adds nothing: the
+		// doctype is already its own segment of the filename, so this yields
+		// "Bill_Alex-Rao_Electricity-Bill_2026". Models produce these readily,
+		// naming the kind of document where an issuer was asked for.
+		// The doctype word is dropped rather than the whole value: "Electricity"
+		// is still something the document said. kagaz cannot reach the true
+		// issuer here ("City Power") without deciding the extractor named the
+		// wrong thing, which is a judgement it does not get to make.
+		{
+			name:       "the doctype word is dropped from an extracted issuer",
+			fields:     map[string]string{"issuer": "Electricity Bill"},
+			path:       "/in/city power bill.txt",
+			docType:    "bill",
+			owners:     []string{"Alex Rao"},
+			want:       "Electricity",
+			wantSource: SourceField,
+		},
+		{
+			name:       "an issuer that is only the doctype falls through entirely",
+			fields:     map[string]string{"issuer": "Insurance Policy"},
+			path:       "/in/northwind policy.pdf",
+			docType:    "insurance-policy",
+			want:       "Northwind",
+			wantSource: SourceFilename,
+		},
+		// The guard on the rule above. "Insurance" ends a real company name as
+		// often as it names a doctype, and dropping doctype words one at a time
+		// would turn a correct issuer into "Northwind".
+		{
+			name:       "a company name ending in a doctype word survives intact",
+			fields:     map[string]string{"issuer": "Northwind Insurance"},
+			path:       "/in/scan.pdf",
+			docType:    "insurance-policy",
+			want:       "Northwind Insurance",
+			wantSource: SourceField,
+		},
+		{
+			name:       "a leading doctype word is not a restatement",
+			fields:     map[string]string{"issuer": "Passport Office"},
+			path:       "/in/scan.pdf",
+			docType:    "passport",
+			want:       "Passport Office",
+			wantSource: SourceField,
+		},
+		{
+			name:       "a trailing multi-word doctype is dropped whole",
+			fields:     map[string]string{"issuer": "Northwind Insurance Policy"},
+			path:       "/in/scan.pdf",
+			docType:    "insurance-policy",
+			want:       "Northwind",
+			wantSource: SourceField,
+		},
+		{
+			name:       "a placeholder issuer is refused rather than filed",
+			fields:     map[string]string{"issuer": "Unknown"},
+			path:       "/in/globex contract.pdf",
+			docType:    "contract",
+			want:       "Globex",
+			wantSource: SourceFilename,
+		},
+		// Refusing a candidate must fall to the NEXT field, not straight to the
+		// filename: a weaker field is still stronger than a guess at the stem.
+		{
+			name:       "a refused issuer falls through to the next ranked field",
+			fields:     map[string]string{"issuer": "Invoice", "vendor": "Acme Corp"},
+			path:       "/in/scan.pdf",
+			docType:    "invoice",
+			want:       "Acme Corp",
+			wantSource: SourceField,
+		},
 	}
 
 	for _, tt := range tests {
