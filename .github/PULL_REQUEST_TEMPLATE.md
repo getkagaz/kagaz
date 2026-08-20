@@ -4,7 +4,7 @@
 
 ## Which package(s)
 
-<!-- e.g. internal/vaultkit/move, cmd/kagaz, machelper/, app/, docs/ -->
+<!-- e.g. internal/vaultkit/move, cmd/kagaz, machelper/, docs/ -->
 
 ## Checklist
 

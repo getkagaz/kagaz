@@ -36,9 +36,10 @@ own, and no proprietary file format standing between you and your files.
 - **Not a document store.** Your files stay as regular files on disk (or in
   iCloud Drive, if that's where you keep `~/Documents`). Delete Kagaz and
   every document is still exactly where the filesystem shows it.
-- **Not a cloud service.** There is no Kagaz server, no account, no sync
-  layer. Sync is whatever you already use for the folder your vault lives
-  in — iCloud Drive, Dropbox, or nothing at all.
+- **Not a cloud service.** There is no Kagaz account and no backend:
+  nothing you file, search, or store is ever sent anywhere, at any tier
+  including paid ones. Sync is whatever you already use for the folder your
+  vault lives in — iCloud Drive, Dropbox, or nothing at all.
 - **Not a general file manager.** It only understands documents that fit
   its doctype catalog and convention; everything else in your filesystem is
   untouched and out of scope.
@@ -219,14 +220,18 @@ Tools path around this one. See
 
 **Is there a menu-bar app?**
 
-One is planned, at `app/` — a SwiftUI `MenuBarExtra` holding zero vault
-logic of its own, shelling out to the `kagaz` CLI with `--json` the same as
-anything else that talks to a vault. **It has not been built yet** — there
-is no `app/` directory in a clone, and no code for it anywhere in this
-repository.
-Once it exists it will still need signing, notarization and a Homebrew Cask
-(all needing an Apple Developer account) before it's distributable; see
-[docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md).
+Yes — **Kagaz for Mac**, a SwiftUI `MenuBarExtra` that holds zero vault logic
+of its own and shells out to the `kagaz` CLI with `--json`, the same as
+anything else that talks to a vault.
+
+**It is a paid, closed-source product, and its source is not in this
+repository.** This repository is the CLI: MIT-licensed, free, and complete on
+its own — every command documented here works without the app, and nothing in
+the CLI is withheld or degraded to sell it. The app is convenience over that
+CLI, not a gate in front of it.
+
+It is not yet released: signing, notarization and distribution all need an
+Apple Developer account. See [docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md).
 
 ## Contributing
 
@@ -238,4 +243,11 @@ review expectations. Please also read
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 RELYWEB TECHNOLOGIES PRIVATE
+LIMITED.
+
+Kagaz is **open core**: this repository — the `kagaz` CLI, the MCP server and
+the `machelper` binaries — is MIT-licensed and free, and stays that way. A
+separate paid, closed-source macOS app is built on top of it (see the FAQ
+above); its source is not in this repository. Nothing documented here is
+withheld or degraded to sell that app.

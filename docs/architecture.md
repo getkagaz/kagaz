@@ -39,8 +39,8 @@ writes manifests, one code path can be reviewed for safety.
              ┌───────────────┼────────────────┐
              ▼                                 ▼
      ┌───────────────┐                ┌────────────────────┐
-     │ app/ (SwiftUI  │                │ cmd/kagaz-mcp        │
-     │ menu-bar app)  │                │ (stdio MCP server)   │
+     │ Kagaz for Mac  │                │ cmd/kagaz-mcp        │
+     │ (separate app) │                │ (stdio MCP server)   │
      └───────────────┘                └────────────────────┘
 ```
 
