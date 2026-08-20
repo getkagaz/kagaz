@@ -215,7 +215,7 @@ jobs:
     # — the bottles are still attached to the GitHub Release.
     steps:
       - name: Download the bottled formulae
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: formulae
           path: staged
