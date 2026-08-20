@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Only meaningful when we are going to deploy; on a PR (forks included)
       # this job is a build check and touches no Pages configuration.
