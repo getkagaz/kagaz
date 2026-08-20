@@ -54,15 +54,22 @@ are not supported, on purpose — see the FAQ below.
 
 ## Install
 
-**Homebrew does not work yet.** No release has been tagged, and the
-`getkagaz/homebrew-kagaz` tap is only populated by the release workflow, so
-it is empty — `brew tap getkagaz/kagaz && brew install kagaz` fails with
-*No available formula*, and `--HEAD` cannot help because it still needs a
-formula from that tap. `Formula/kagaz.rb` in this repo is not installable
-either: its `url` and `sha256` are placeholders that the release workflow
-rewrites at tag time. **Build from source today.**
+```
+brew tap getkagaz/kagaz
+brew install kagaz
+```
 
-### From source (the only path that works today)
+That installs the `kagaz` CLI, the `kagaz-mcp` server and `kagaz-machelper`
+(Apple Vision OCR and on-device classification) from a prebuilt arm64 bottle.
+The MLX classifier is a separate, opt-in formula — `brew install
+getkagaz/kagaz/kagaz-mlx` — because it pulls the whole MLX-Swift stack and its
+weights are a multi-gigabyte `kagaz model pull`.
+
+Note `Formula/kagaz.rb` **in this repository** is not installable directly: its
+`url` and `sha256` are placeholders the release workflow rewrites at tag time.
+Install from the tap, not from a checkout.
+
+### From source
 
 Needs **Go 1.23+** and **Xcode's Command Line Tools** (`xcode-select
 --install`); full Xcode is *not* required for the base install. `poppler`

@@ -3,9 +3,12 @@ name: release
 # Builds arm64 bottles for `kagaz` and syncs both formulae to the tap repo
 # (getkagaz/homebrew-kagaz).
 #
-# NOTHING HERE HAS EVER RUN: no release has been tagged and no bottle has ever
-# been published. This workflow is unexercised until a `v*` tag is pushed with
-# the KAGAZ_TAP_TOKEN secret configured.
+# First run: v0.1.0, 2026-08-20. The `meta` and `bottle` jobs worked; `tap`
+# failed at the push with a 403, because KAGAZ_TAP_TOKEN could not write to
+# getkagaz/homebrew-kagaz. The formulae for v0.1.0 were pushed to the tap by
+# hand to unblock the release. Until that token is replaced with one that has
+# write access to the tap repo, expect `tap` to keep failing while everything
+# before it succeeds.
 #
 # Two triggers, one tag. `github.ref_name` is the tag on a tag push but the
 # *default branch* on `release: published`, so the tag is resolved explicitly

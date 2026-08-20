@@ -18,7 +18,7 @@ just because it's listed; each row states its actual status.
 | `depends_on arch: :arm64`, `depends_on macos: :sequoia`, `depends_on "go" => :build` | **Declared in `kagaz.rb`.** No `depends_on xcode: :build` — correct, see below. `kagaz-mlx.rb` declares `arch: :arm64`, `macos: :sequoia`, **and now `depends_on xcode: ["16.0", :build]`** — this was a gap earlier in this doc's editing history (an in-progress `Formula/` change landed while this checklist was being written) and is now closed: `kagaz-mlx.rb`'s `install` step runs `swift build`, then `Scripts/build-metallib.sh` (which needs `xcrun metal`, hence the Xcode dependency), and installs both `kagaz-machelper-mlx` and `mlx.metallib` into `bin` together. |
 | `livecheck` block | **Declared** in both formulae, `strategy :github_latest`. |
 | Formula `test do` block | **Written** in both. `kagaz.rb`: inits a `--demo` vault, checks `--version`, runs `find --json`, probes `kagaz-machelper`. `kagaz-mlx.rb`: asserts `mlx.metallib` was installed alongside the binary, probes `kagaz-machelper-mlx`, asserts a clean sandbox reports no weights via a *weights* reason specifically (not a metallib/shader one — a regression guard against the exact "linked but shaderless binary" defect the Metal build step exists to prevent), and checks `--version`'s `tool` field. |
-| A tagged `v*` release with arm64 bottles | **Not done.** No release has been cut. Bottle publication needs a live tagged release plus the `KAGAZ_TAP_TOKEN` secret configured in this repo's Actions settings — nobody should read this checklist and conclude a bottle exists; both formulae's `url`/`sha256` are still placeholders pointing at a tag that hasn't been created. |
+| A tagged `v*` release with arm64 bottles | **Done — v0.1.0, 2026-08-20.** `release.yml` built and published `kagaz-0.1.0.arm64_sequoia.bottle.tar.gz`, and both formulae in the tap carry real `url`/`sha256` values. The formulae in *this* repo still hold placeholders by design; the workflow rewrites them at tag time. **Caveat:** the `tap` job failed with a 403 — `KAGAZ_TAP_TOKEN` cannot write to `getkagaz/homebrew-kagaz` — so the v0.1.0 formulae were pushed by hand. Fix the token before the next tag. |
 | `brew install --build-from-source` works on a clean Apple-silicon Mac | **Partially verified.** A clean `swift build --package-path machelper -c release` succeeded twice under a Command-Line-Tools-only toolchain (confirmed `xcode-select -p` pointed at CommandLineTools, `rm -rf machelper/.build` first) and the resulting binary ran a real on-device classification. The full `brew install --build-from-source kagaz` path through the formula itself has not been run end-to-end on a genuinely clean machine — still needs that pass before the first tagged release. |
 
 ## Homebrew Core submission (longer-term, optional)
@@ -47,14 +47,21 @@ Cask for it would live in the `getkagaz/kagaz` tap alongside these formulae and
 does not exist yet. Nothing in this repository should be read as claiming
 otherwise, and nothing here depends on the app.
 
-## What "done" will look like
+## What "done" looked like
 
-1. A `v0.1.0` (or similar) tag pushed, triggering `release.yml`.
-2. arm64 bottles built and attached to the GitHub Release.
-3. The formula synced to `getkagaz/homebrew-kagaz` (the tap repo) with
-   correct bottle SHA256s.
-4. A clean-machine `brew tap getkagaz/kagaz && brew install kagaz` verified
-   by someone who did not build the formula themselves.
+As of **v0.1.0, 2026-08-20**, three of the four are true:
 
-Until all four are true, treat every install instruction elsewhere in this
-repo's docs as "the intended path," not "the currently working path."
+1. ✅ `v0.1.0` tagged, triggering `release.yml`.
+2. ✅ arm64 bottle built and attached to the GitHub Release.
+3. ⚠️ Formulae synced to `getkagaz/homebrew-kagaz` with correct bottle
+   SHA256s — but pushed **by hand**, because the `tap` job hit a 403.
+   See the caveat above; this must be fixed before the next tag or the
+   manual step repeats.
+4. ✅ `brew tap getkagaz/kagaz && brew install kagaz` installs from the
+   bottle, and the installed binary runs `init --demo`, `find --json` and
+   `doctor` cleanly.
+
+Item 4's original wording asked for verification "by someone who did not
+build the formula themselves". That remains genuinely unmet: the install was
+verified on the machine that cut the release, which shares its Homebrew
+prefix and toolchain. A second machine is still the honest test.
