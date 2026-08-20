@@ -198,7 +198,7 @@ jobs:
           gh release upload "$TAG" ./*.bottle.json --clobber
 
       - name: Keep the bottled formulae for the tap job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: formulae
           path: |
