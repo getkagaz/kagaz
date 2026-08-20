@@ -11,6 +11,7 @@ persistent flags:
 |---|---|
 | `--vault <path>` | Use this vault instead of discovering `vault.yaml` by walking up from the current directory. |
 | `--json` | Emit a stable, documented JSON shape instead of human-formatted text. Human output is for humans; JSON is for agents (scripts, the menu-bar app, the MCP server) — both come from the same underlying data, never a separate code path. |
+| `--quiet` | Suppress human progress output. Errors still go to stderr and the exit code is unchanged, so a script keeps everything it branches on. |
 | `--version` | Print the `kagaz` version and exit. |
 
 Mutating commands never mutate silently: they print a preview and require
@@ -60,8 +61,9 @@ Filters: `--person`, `--company`, `--area`, `--doctype`, `--tag`,
 `--active`, `--period` (calendar or fiscal, see
 [conventions-guide.md](conventions-guide.md#fiscal-years)), plus a bare
 positional full-text query matched against filename, path, sidecar text and
-extracted fields. `kagaz find --json` is what the MCP `find` tool and the
-menu-bar app both call underneath.
+extracted fields. `--limit <n>` stops after that many results (`0`, the
+default, means no limit). `kagaz find --json` is what the MCP `find` tool
+and the menu-bar app both call underneath.
 
 ## `kagaz doctypes`
 
@@ -126,18 +128,27 @@ format isn't in this list, or that can't be extracted for some other
 reason, is skipped with guidance in the batch review explaining why and
 what to do instead.
 
+| Flag | Meaning |
+|---|---|
+| `--select <spec>` | Which proposals to file: `all`, `none`, or a subset like `1,3-5`. Without it every fileable proposal is filed. |
+
 ## `kagaz move`
 
 Relocates a document to a specific path, or re-derives its conventional
 path and moves it there. Always goes through `move.Engine`: SHA256-verified
 copy, tag carry-over, sidecar carry-over, staged (never deleted) source.
 
+`--allow-outside-vault` permits a destination outside the vault root: the
+document leaves the vault and kagaz stops managing it. It stays reversible
+with `kagaz rollback`.
+
 ## `kagaz tag`
 
-Adds/removes Finder tags on a document, validated against the vault's
-controlled vocabulary (`--force` to bypass, which is itself worth thinking
-twice about — an unvalidated tag is a `kagaz lint` finding waiting to
-happen).
+Adds/removes Finder tags on a document with `--add` and `--remove` (both
+repeatable), validated against the vault's controlled vocabulary (`--force`
+to bypass, which is itself worth thinking twice about — an unvalidated tag
+is a `kagaz lint` finding waiting to happen). A tag outside the vocabulary
+without `--force` is refused before anything is written, and exits `1`.
 
 ## `kagaz supersede`
 
@@ -155,7 +166,9 @@ tags outside the vocabulary, missing lifecycle tags (when configured),
 multiple `active` documents where the single-active rule applies,
 password-looking tokens in filenames (when configured), stale sidecars, and
 orphaned sidecars. Each finding carries a rule id, severity, path, message
-and whether `--fix` can repair it automatically. `--fix` only ever applies
+and whether `--fix` can repair it automatically. `--list-rules` prints every
+rule with its severity and whether `--fix` can ever repair it, without
+reading the vault. `--fix` only ever applies
 provably safe repairs (normalize a filename to the grammar, move a file to
 its conventional folder, add an unambiguous missing lifecycle tag) and every
 fix still goes through `move.Engine` with its own manifest — a lint fix is a
@@ -297,11 +310,30 @@ retune moves what doctor reports; do not transcribe them into a client.
 
 ## `kagaz watch`
 
-Watches the vault (via `fsnotify`, debounced) for new or changed files and
-runs the ingest pipeline's *propose* stage only — it never auto-executes a
-move. Meant to run under `brew services start kagaz` as a background helper
-that keeps proposals current without you needing to remember to run
-`kagaz ingest`.
+Watches the directories you name — the vault itself if you name none — via
+`fsnotify`, debounced, and runs the ingest pipeline's *propose* stage only.
+It never auto-executes a move. Meant to run under `brew services start
+kagaz` as a background helper that keeps proposals current without you
+needing to remember to run `kagaz ingest`.
+
+| Flag | Meaning |
+|---|---|
+| `--debounce <duration>` | How long a burst of changes must be quiet before it is treated as settled. Default `2s`. |
+| `--once` | Propose for the first settled batch, then exit. |
+
+Watching the vault itself does not feed back on itself: a document filed by
+`kagaz ingest`, its sidecar, its manifest, the audit log, `vault.yaml`,
+`INDEX.md` and `AGENTS.md` are all ignored, so a watcher and a working
+vault do not chase each other.
+
+**A file still being written can settle.** The debounce restarts on every
+change, so an ordinary copy is proposed only once it finishes — but a
+writer that stalls for longer than the debounce (a slow network copy, a
+scanner that pauses) leaves a partial file looking settled, and the
+proposal is then made from whatever had been written. It is a proposal, so
+nothing moves and `kagaz ingest` re-reads the finished file; but the line
+printed can name the wrong owner or identifier. Raise `--debounce` for a
+source that stalls.
 
 ## `kagaz mcp`
 
