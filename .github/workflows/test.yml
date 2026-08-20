@@ -4,10 +4,34 @@ name: test
 # (pdftotext, kagaz-machelper, mdfind, brctl) exist. That is the honest test of
 # graceful degradation (project constraint 9), so Linux is not optional here.
 
+# Path filters are an allowlist starting from `**`, deliberately: anything new
+# runs the suite until someone excludes it on purpose. A `paths-ignore` list
+# would fail the other way, silently skipping tests for a file type nobody
+# thought about.
+#
+# The one non-obvious entry is docs/AGENTS.template.md. It looks like prose and
+# is excluded by `!**.md`, but internal/vaultkit/index/index_test.go reads it
+# and asserts the embedded copy in internal/vaultkit/index/template/ has not
+# drifted from it. It is data, so it is added back.
 on:
   push:
     branches: [main]
+    paths:
+      - "**"
+      - "!**.md"
+      - "!LICENSE"
+      - "!.github/ISSUE_TEMPLATE/**"
+      - "docs/AGENTS.template.md"
   pull_request:
+    # Duplicated rather than anchored: GitHub Actions does not support YAML
+    # anchors in workflow files. machelper.yml repeats its list for the same
+    # reason. Keep the two lists in step.
+    paths:
+      - "**"
+      - "!**.md"
+      - "!LICENSE"
+      - "!.github/ISSUE_TEMPLATE/**"
+      - "docs/AGENTS.template.md"
   workflow_dispatch:
 
 # Read-only. This workflow runs on pull_request (fork PRs included) and must
