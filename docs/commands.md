@@ -21,7 +21,10 @@ vault. See [architecture.md](architecture.md#propose--preview--approve--execute-
 
 ## Exit codes
 
-Part of the contract: a script may branch on these.
+Part of the contract: a script may branch on these. The `--json` envelope that
+accompanies them — its keys, its statuses, and the rule for when
+`schema_version` changes — is specified in
+[the JSON envelope contract](json-envelope-contract.md).
 
 | Code | Meaning |
 |---|---|
