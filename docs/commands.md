@@ -18,6 +18,27 @@ confirmation unless run with `--accept-proposal`/`--yes`, and
 `--propose-only` prints the proposal and exits `0` without touching the
 vault. See [architecture.md](architecture.md#propose--preview--approve--execute-with-manifest).
 
+## Exit codes
+
+Part of the contract: a script may branch on these.
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. A refusal that is a real answer exits `0` too — `ingest --propose-only` that proposes nothing, or `lint` with only warnings. |
+| `1` | A runtime failure: no vault found, a path that does not exist, a tag outside the vocabulary. |
+| `2` | A bad invocation — unknown flag, missing argument. |
+| `3` | A refusal to act without consent: `resolve --for-send` on a `confidential` document with no `--confirm`. No path is printed. |
+| `4` | `lint` completed and found **error**-severity findings. Warnings and info alone still exit `0`. |
+
+The distinction between `1` and `3` is the one worth branching on: `1` means
+the command could not be carried out, while `3` means it could and
+deliberately was not, pending a human. A script that treats every non-zero
+exit as failure will report a working confidential gate as a broken command.
+
+The distinction between `0` and `4` matters for CI: `lint` exits `0` when the
+vault is merely untidy and `4` when a convention it declares is actually
+broken, so a pipeline can fail on the second without failing on the first.
+
 ## `kagaz init`
 
 Creates a new vault: writes `vault.yaml`, creates the category folders from
