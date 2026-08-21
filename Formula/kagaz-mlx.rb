@@ -71,12 +71,15 @@ class KagazMlx < Formula
       system "./Scripts/build-metallib.sh", "-c", "release"
 
       # BOTH files must land in the SAME directory. mlx's first lookup is
-      # `<dir of the running binary>/mlx.metallib`, resolved via `dladdr`, which
-      # follows symlinks — so Homebrew's symlink in /opt/homebrew/bin resolves
-      # back to this real Cellar bin directory, where both files sit together.
-      # Do not move the metallib to `libexec` or `share`.
-      bin.install ".build/release/kagaz-machelper-mlx"
-      bin.install ".build/release/mlx.metallib"
+      # `<dir of the running binary>/mlx.metallib`, resolved via `dladdr`.
+      # dladdr resolves through symlinks to the real file, so the pair lives in
+      # libexec and only the executable is linked into bin: `brew audit
+      # --strict` rejects a non-executable in bin, and mlx.metallib is data.
+      # Keep them together wherever they go — splitting them makes the helper
+      # die on its first MLX call with "Failed to load the default metallib".
+      libexec.install ".build/release/kagaz-machelper-mlx"
+      libexec.install ".build/release/mlx.metallib"
+      bin.install_symlink libexec/"kagaz-machelper-mlx"
     end
   end
 
@@ -97,33 +100,44 @@ class KagazMlx < Formula
       `xcrun metal`, which ships only inside Xcode. The base `kagaz` formula
       has no such requirement and is unaffected.
 
-      mlx.metallib is installed alongside kagaz-machelper-mlx and must stay
-      there; MLX loads it from the directory of the running binary.
+      mlx.metallib is installed alongside kagaz-machelper-mlx in libexec and
+      must stay there; MLX loads it from the directory of the running binary,
+      resolving through the symlink in bin.
     EOS
   end
 
   test do
     # The metallib must be installed next to the binary, or MLX cannot load a
     # shader and the helper dies on its first real operation.
-    assert_path_exists bin/"mlx.metallib"
+    assert_path_exists libexec/"mlx.metallib"
 
     # --probe never loads a model and never downloads anything; it exits 0
     # whether or not weights are present and puts the answer in `available`.
     probe = JSON.parse(shell_output("#{bin}/kagaz-machelper-mlx --probe"))
     assert_equal 1, probe["contract"]
     assert_equal "mlx", probe["engine"]
-    # No weights in the sandbox, so this must be a clean, structured "no".
-    refute probe["available"], "probe claimed MLX weights exist in a clean sandbox"
-
     # REGRESSION GUARD. The probe checks two things: that the MLX runtime works
     # (Metal device + shader library) and that the weights are present. Only the
-    # second may fail here. A metallib complaint means `swift build` shipped a
-    # binary with no compiled shaders again — the exact defect this formula's
-    # build-metallib.sh step exists to prevent.
-    reason = probe["reason"].to_s
-    refute_empty reason, "an unavailable probe must always carry a reason"
-    assert_match(/weight/i, reason)
-    refute_match(/metallib|shader/i, reason)
+    # second is allowed to fail. A metallib complaint means `swift build`
+    # shipped a binary with no compiled shaders again — the exact defect this
+    # formula's build-metallib.sh step exists to prevent.
+    #
+    # Both outcomes are legitimate, so the test accepts either. `brew test`
+    # sandboxes the working directory, not $HOME, and the weights live in
+    # ~/Library/Application Support/kagaz/models — so on any machine where
+    # someone has actually run `kagaz model pull`, available is true. Asserting
+    # otherwise made this test pass on CI and fail on precisely the machines
+    # that use the MLX tier.
+    if probe["available"]
+      # Stronger than the branch below: the runtime answered at all, which it
+      # cannot do without loading its shader library.
+      assert_empty probe["reason"].to_s, "an available probe needs no reason"
+    else
+      reason = probe["reason"].to_s
+      refute_empty reason, "an unavailable probe must always carry a reason"
+      assert_match(/weight/i, reason)
+      refute_match(/metallib|shader/i, reason)
+    end
 
     # `--version` reports the helper's own compile-time version, which is not
     # the formula version, so assert the contract fields rather than a number.
