@@ -68,7 +68,30 @@ class KagazMlx < Formula
       # metallib against the mlx-swift checkout SwiftPM just resolved. Without
       # this step the install links, runs `--version`, and then dies on the
       # first MLX operation with "Failed to load the default metallib".
-      system "./Scripts/build-metallib.sh", "-c", "release"
+      # Two things are wrong with the default environment here, and both are
+      # invisible until the formula is actually built rather than read.
+      #
+      # `depends_on xcode:` asserts Xcode is *installed*; it does not make the
+      # build *use* it. Homebrew builds under whatever `xcode-select -p` points
+      # at, which is /Library/Developer/CommandLineTools by default -- the
+      # normal state of a Mac that also has Xcode -- and `xcrun metal` ships
+      # only inside Xcode. So DEVELOPER_DIR has to be set.
+      #
+      # But setting it is not enough: Homebrew puts its own `xcrun` shim ahead
+      # of /usr/bin, and that shim contains, verbatim,
+      #   # Some build tools set DEVELOPER_DIR, so discard it
+      #   unset DEVELOPER_DIR
+      # for every invocation that is not --show-sdk-*. Setting DEVELOPER_DIR via
+      # ENV[...], via env(1), or via HOMEBREW_DEVELOPER_DIR all fail identically
+      # because of that line. Putting /usr/bin first is what reaches the real
+      # xcrun, which honours DEVELOPER_DIR and finds metal in its cryptex mount.
+      #
+      # Without both, this fails with "the Metal compiler is not available"
+      # three minutes into the build, for anyone who has not run
+      # `sudo xcode-select -s`.
+      system "/usr/bin/env", "DEVELOPER_DIR=#{MacOS::Xcode.prefix}",
+             "PATH=/usr/bin:#{ENV["PATH"]}",
+             "./Scripts/build-metallib.sh", "-c", "release"
 
       # BOTH files must land in the SAME directory. mlx's first lookup is
       # `<dir of the running binary>/mlx.metallib`, resolved via `dladdr`.
