@@ -145,17 +145,30 @@ jobs:
         id: bottle
         run: |
           set -euo pipefail
-          brew install --build-bottle --verbose getkagaz/kagaz/kagaz
-          brew test getkagaz/kagaz/kagaz
-          brew bottle \
-            --json \
-            --no-rebuild \
-            --root-url="https://github.com/getkagaz/kagaz/releases/download/${TAG}" \
-            getkagaz/kagaz/kagaz
+          # Both formulae, not just the base one. kagaz-mlx shipped at v0.1.0
+          # unbottled and never built by CI, and was uninstallable for every
+          # user in the default macOS configuration: `xcrun metal` lives only
+          # in Xcode, Homebrew builds under whatever xcode-select points at,
+          # and nothing had ever run the formula to notice. Building and
+          # testing it here is what would have caught that. Bottling it means
+          # users never run that path at all -- no Xcode, no 3-minute build.
+          for f in kagaz kagaz-mlx; do
+            brew install --build-bottle --verbose "getkagaz/kagaz/${f}"
+            brew test "getkagaz/kagaz/${f}"
+            brew bottle \
+              --json \
+              --no-rebuild \
+              --root-url="https://github.com/getkagaz/kagaz/releases/download/${TAG}" \
+              "getkagaz/kagaz/${f}"
+          done
           ls -l ./*.bottle.tar.gz ./*.bottle.json
-          # Write the bottle block (with its sha256) into the staged formula.
+          # Write each bottle block (with its sha256) into the staged formulae.
           brew bottle --merge --write --no-commit ./*.bottle.json
+          # Take both from the tap, where --merge wrote the bottle blocks; the
+          # copies under Formula/ have the rewritten url and sha but no bottle
+          # stanza.
           cp "$TAP/Formula/kagaz.rb" ./kagaz.rb
+          cp "$TAP/Formula/kagaz-mlx.rb" ./kagaz-mlx.rb
           printf 'bottled=true\n' >>"$GITHUB_OUTPUT"
 
       - name: Ensure the release object exists
@@ -207,7 +220,7 @@ jobs:
           name: formulae
           path: |
             kagaz.rb
-            Formula/kagaz-mlx.rb
+            kagaz-mlx.rb
           if-no-files-found: error
 
   tap:
@@ -247,7 +260,7 @@ jobs:
             "https://x-access-token:${GH_TOKEN}@github.com/getkagaz/homebrew-kagaz.git" tap
           mkdir -p tap/Formula
           cp staged/kagaz.rb tap/Formula/kagaz.rb
-          cp staged/Formula/kagaz-mlx.rb tap/Formula/kagaz-mlx.rb
+          cp staged/kagaz-mlx.rb tap/Formula/kagaz-mlx.rb
 
           cd tap
           git config user.name "kagaz-release[bot]"
