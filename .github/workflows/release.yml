@@ -94,7 +94,6 @@ jobs:
       contents: write # uploads bottle assets to the release
     env:
       TAG: ${{ needs.meta.outputs.tag }}
-      VERSION: ${{ needs.meta.outputs.version }}
       HOMEBREW_NO_ANALYTICS: 1
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_FROM_API: 1
@@ -123,10 +122,9 @@ jobs:
           for f in Formula/kagaz.rb Formula/kagaz-mlx.rb; do
             /usr/bin/sed -i '' \
               -e "s|^  url \".*\"$|  url \"${url}\"|" \
-              -e "s|^  version \".*\"$|  version \"${VERSION}\"|" \
               -e "s|^  sha256 \"[0-9a-f]\{64\}\"$|  sha256 \"${sha}\"|" \
               "$f"
-            grep -E '^  (url|version|sha256) ' "$f"
+            grep -E '^  (url|sha256) ' "$f"
           done
 
       - name: Stage a local tap

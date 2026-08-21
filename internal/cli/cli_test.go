@@ -1752,3 +1752,94 @@ func TestDoctorJSONCarriesPerTierTimeouts(t *testing.T) {
 		t.Errorf("an empty timeouts object was serialised:\n%s", out)
 	}
 }
+
+// TestInitDemoRefusesADirectoryThatAlreadyHasFiles is the fix for a real
+// accident: `kagaz init --demo` was pointed at a home Documents folder — which
+// is the DEFAULT --root — and scattered 18 synthetic documents through it,
+// merging its own Vehicles/Sam-Rao into a Vehicles/ folder that already held
+// real vehicle paperwork. Nothing was overwritten, but telling the two apart
+// afterwards was manual work over a folder of someone's actual records.
+//
+// Demo documents are fiction. Mixing fiction into a folder of real documents
+// is not something to do without being asked twice, and --demo is the one
+// write path with no preview and no approval step.
+func TestInitDemoRefusesADirectoryThatAlreadyHasFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "documents")
+	if err := os.MkdirAll(filepath.Join(root, "KYC"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "KYC", "passport.pdf")
+	if err := os.WriteFile(real, []byte("a real document"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errw, code := run(t, "init", "--root", root, "--demo")
+	if code == ExitOK {
+		t.Fatalf("init --demo populated a non-empty directory\nstdout: %s", out)
+	}
+	if !strings.Contains(errw, root) {
+		t.Errorf("the refusal does not name the directory it refused: %s", errw)
+	}
+	if !strings.Contains(errw, "--force") {
+		t.Errorf("the refusal does not say how to proceed anyway: %s", errw)
+	}
+	// Refusing must not half-create the vault.
+	if _, err := os.Stat(filepath.Join(root, "vault.yaml")); err == nil {
+		t.Error("a refused init still wrote vault.yaml")
+	}
+	if body, err := os.ReadFile(real); err != nil || string(body) != "a real document" {
+		t.Errorf("the existing document was disturbed: %v", err)
+	}
+}
+
+// --force is the escape hatch, so the refusal is a speed bump and not a wall.
+func TestInitDemoForcedIntoANonEmptyDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "documents")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, errw, code := run(t, "init", "--root", root, "--demo", "--force"); code != ExitOK {
+		t.Fatalf("--force did not override the refusal: exit %d\n%s\n%s", code, out, errw)
+	}
+}
+
+// An empty directory, or one that does not exist yet, is the normal case and
+// must stay silent.
+func TestInitDemoStillWorksOnAnEmptyDirectory(t *testing.T) {
+	for _, name := range []string{"absent", "empty"} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "vault")
+			if name == "empty" {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if out, errw, code := run(t, "init", "--root", root, "--demo"); code != ExitOK {
+				t.Fatalf("exit %d\n%s\n%s", code, out, errw)
+			}
+		})
+	}
+}
+
+// A plain init over an existing folder is the PRIMARY use — pointing kagaz at
+// documents you already have. It must not be refused. It must say what it is
+// adopting, because "kagaz init" in the wrong terminal tab should be visible.
+func TestInitAdoptsAnExistingFolderAndSaysSo(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "documents")
+	if err := os.MkdirAll(filepath.Join(root, "KYC"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "KYC", "passport.pdf"), []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errw, code := run(t, "init", "--root", root)
+	if code != ExitOK {
+		t.Fatalf("plain init refused an existing folder: exit %d\n%s\n%s", code, out, errw)
+	}
+	if !strings.Contains(out+errw, "already holds") {
+		t.Errorf("plain init adopted a folder of documents silently:\nstdout: %s\nstderr: %s", out, errw)
+	}
+}

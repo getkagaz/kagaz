@@ -30,8 +30,8 @@ class KagazMlx < Formula
   desc "Opt-in MLX classification tier for Kagaz"
   homepage "https://github.com/getkagaz/kagaz"
   url "https://github.com/getkagaz/kagaz/archive/refs/tags/v0.1.0.tar.gz"
-  version "0.1.0"
-  # Placeholder: filled in by .github/workflows/release.yml at tag time.
+  # Rewritten by .github/workflows/release.yml at tag time; the value
+  # here is a placeholder until then.
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
   head "https://github.com/getkagaz/kagaz.git", branch: "main"

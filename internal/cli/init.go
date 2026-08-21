@@ -89,6 +89,31 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				})
 			}
 
+			var warnings []string
+
+			// What is already here decides whether this is safe. `--root`
+			// defaults to ~/Documents, so the folder most likely to be hit by
+			// a mistyped or forgotten flag is the one holding real records.
+			occupants, err := occupantsOf(abs)
+			if err != nil {
+				return err
+			}
+			if demo && len(occupants) > 0 && !force {
+				return fmt.Errorf(
+					"%s already holds %s; --demo writes 18 invented documents and would mix them "+
+						"in among these. Point --root at an empty folder, or pass --force to do it "+
+						"here anyway (nothing existing is overwritten either way)",
+					abs, describeOccupants(occupants))
+			}
+			if !demo && len(occupants) > 0 {
+				// Not a refusal: adopting a folder you already have is the
+				// point of the command. It is said out loud because `kagaz
+				// init` in the wrong terminal tab should be visible.
+				warnings = append(warnings, fmt.Sprintf(
+					"%s already holds %s; kagaz adopts this folder and files alongside them, "+
+						"moving nothing on its own", abs, describeOccupants(occupants)))
+			}
+
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return err
 			}
@@ -114,7 +139,6 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				payload.Created = append(payload.Created, d)
 			}
 
-			var warnings []string
 			if demo {
 				n, warn, err := writeDemoVault(cmd.Context(), cfg)
 				if err != nil {
@@ -315,4 +339,44 @@ func vaultYAML(name string, fyStart int, demo bool) string {
 		b.WriteString("      purchase_date: '(?i)purchase\\s+date[:\\s]{1,4}([0-9]{1,2}[ /.\\-][A-Za-z0-9]{2,9}[ /.\\-][0-9]{2,4})'\n")
 	}
 	return b.String()
+}
+
+// occupantsOf lists what a directory already contains, ignoring the dot files
+// a Finder or a shell leaves behind. A folder holding only .DS_Store is empty
+// as far as a person is concerned, and refusing on one would be noise.
+//
+// A missing directory has no occupants, which is the ordinary case: `kagaz
+// init --root ~/vaults/personal` creates it.
+func occupantsOf(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// describeOccupants renders a directory's contents for a sentence: a couple of
+// names so the reader recognises the folder, and a count so they know the
+// scale. Naming them matters more than the number -- "Archive, KYC and 6 more"
+// identifies which folder this is; "8 items" does not.
+func describeOccupants(names []string) string {
+	switch n := len(names); {
+	case n == 1:
+		return fmt.Sprintf("%q", names[0])
+	case n == 2:
+		return fmt.Sprintf("%q and %q", names[0], names[1])
+	default:
+		return fmt.Sprintf("%q, %q and %d more", names[0], names[1], n-2)
+	}
 }
