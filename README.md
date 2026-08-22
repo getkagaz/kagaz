@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/readme-hero.png" alt="Kagaz — local-first document vault manager for macOS" width="720">
+</p>
+
 # Kagaz
 
 Kagaz (काग़ज़, "paper") is a local-first, global document vault manager for
@@ -6,11 +10,11 @@ in ordinary folders — and Kagaz adds naming convention, Finder tags and
 searchable, offline facts on top. There is no database, no cloud sync of its
 own, and no proprietary file format standing between you and your files.
 
-> **Status: pre-1.0, unreleased.** There is no published Homebrew bottle and
-> no shipped Cask yet. The install instructions below describe the intended
-> path once a tagged release exists — see
+> **Status: pre-1.0.** The CLI is released and installable — `brew install`
+> below works today. The menu-bar app is a separate paid product and is not
+> released yet; it needs code signing and notarization first. See
 > [docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md) for exactly what is and
-> isn't done. Today, building from source is how you run it.
+> isn't done.
 
 ## What Kagaz is
 
@@ -69,6 +73,9 @@ Note `Formula/kagaz.rb` **in this repository** is not installable directly: its
 `url` and `sha256` are placeholders the release workflow rewrites at tag time.
 Install from the tap, not from a checkout.
 
+See [docs/installation.md](docs/installation.md) for the full breakdown and the
+optional MLX tier.
+
 ### From source
 
 Needs **Go 1.23+** and **Xcode's Command Line Tools** (`xcode-select
@@ -90,21 +97,6 @@ cp bin/kagaz bin/kagaz-mcp machelper/.build/release/kagaz-machelper /usr/local/b
 ```
 
 Then `kagaz doctor` reports which optional tiers it can see.
-
-### Homebrew (after the first tagged release — not available yet)
-
-Once a release is tagged, this will be the everyday path and will install
-the `kagaz` CLI, the `kagaz-mcp` MCP server and the `kagaz-machelper` Swift
-helper from a prebuilt bottle:
-
-```
-brew tap getkagaz/kagaz   # not yet available
-brew install kagaz        # not yet available
-```
-
-See [docs/installation.md](docs/installation.md) for the full breakdown,
-the optional MLX tier (which genuinely does need full Xcode, unlike the
-base install — see the FAQ below), and the menu-bar app.
 
 ## Quickstart
 
