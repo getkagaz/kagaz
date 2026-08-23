@@ -1,0 +1,17 @@
+# Blank issues are disabled on purpose: every issue kind Kagaz expects has a
+# form (bug / feature / doctype), and each form captures specifics — repro
+# commands, `kagaz doctor` output, redacted sample text — that a blank issue
+# routinely omits. Open-ended questions have a Discussions link below.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/getkagaz/kagaz/security/advisories/new
+    about: >-
+      Anything that could delete/corrupt a document, leak content off-machine,
+      or bypass the confidential-resolution gate. Do NOT open a public issue —
+      use private vulnerability reporting. See SECURITY.md.
+  - name: Questions & ideas
+    url: https://github.com/getkagaz/kagaz/discussions
+    about: >-
+      Usage questions, vault-convention advice, or an idea not yet concrete
+      enough for a feature request. Ask in Discussions.
