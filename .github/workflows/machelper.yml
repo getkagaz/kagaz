@@ -98,7 +98,7 @@ jobs:
         run: printf '#include <cstdlib>\nint main(){}\n' | clang++ -x c++ -c - -o /dev/null
 
       - name: Cache SwiftPM dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: machelper-mlx/.build
           key: ${{ runner.os }}-spm-mlx-${{ hashFiles('machelper-mlx/Package.resolved') }}
