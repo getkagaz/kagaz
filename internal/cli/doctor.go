@@ -178,6 +178,15 @@ func checkVaultRoot(cfg *config.Config) Check {
 	return Check{Name: "vault-root", Status: CheckOK, Detail: cfg.VaultRoot}
 }
 
+// xattrImpact is what a vault loses when its filesystem cannot hold extended
+// attributes, which is more than Finder and Spotlight integration: the xattr is
+// the only place tags are stored. They are not mirrored into the sidecar, so
+// Kagaz's own tag queries go silent too. Reword this if that ever changes.
+const xattrImpact = "documents get no Finder tags, and tags are stored nowhere else: " +
+	"kagaz find --tag never matches and lint cannot check the tag vocabulary, " +
+	"and mdfind and Finder smart folders will not find documents by tag; " +
+	"filenames, folders and sidecar text still work"
+
 // checkXattr writes and reads back a Finder tag on a temporary file inside the
 // vault, because extended-attribute support is a property of the filesystem
 // the vault happens to sit on, not of the operating system.
@@ -195,17 +204,24 @@ func checkXattr(cfg *config.Config) Check {
 
 	if err := tags.Write(path, []string{"kagaz-doctor"}); err != nil {
 		return Check{
-			Name: "xattr", Status: CheckWarn, Detail: err.Error(),
-			Impact: "documents get no Finder tags, so mdfind and Finder smart folders will not find them by tag; " +
-				"filenames, folders and sidecars still work",
-			Fix: "keep the vault on an APFS/HFS+ volume",
+			Name: "xattr", Status: CheckWarn, Detail: err.Error(), Impact: xattrImpact,
 		}
 	}
+	// A tag that writes but does not survive a read is as good as no tag, so
+	// both failures carry the same impact. They keep separate details because
+	// only one of them has an error to report.
 	read, err := tags.Read(path)
-	if err != nil || len(read) != 1 {
+	if err != nil {
+		return Check{
+			Name: "xattr", Status: CheckWarn,
+			Detail: "a tag was written but could not be read back: " + err.Error(),
+			Impact: xattrImpact,
+		}
+	}
+	if len(read) != 1 {
 		return Check{
 			Name: "xattr", Status: CheckWarn, Detail: "a tag was written but did not read back",
-			Impact: "Finder tags may not survive on this filesystem",
+			Impact: xattrImpact,
 		}
 	}
 	return Check{Name: "xattr", Status: CheckOK, Detail: "extended attributes work on this filesystem"}
