@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/getkagaz/kagaz/internal/userconfig"
 	"github.com/getkagaz/kagaz/internal/vaultkit/audit"
 	"github.com/getkagaz/kagaz/internal/vaultkit/config"
 )
@@ -52,25 +53,53 @@ func NewRuntime(version string, out, errw io.Writer, in io.Reader) *Runtime {
 //
 // --vault takes the path of the vault.yaml file itself; a directory is also
 // accepted because humans type directories, and config.Find then walks upward
-// from it. With no flag the KAGAZ_VAULT environment variable is consulted, and
-// failing that the search starts at the working directory.
+// from it. With no flag the KAGAZ_VAULT environment variable is consulted,
+// then the working directory, and finally the vault saved by `kagaz use` —
+// which is also the one the Kagaz app writes when you pick a vault there.
+//
+// The saved vault comes LAST on purpose. Standing inside a vault and getting
+// a different one because an app chose it elsewhere would be the surprising
+// answer; the saved default is for the far more common case of running kagaz
+// from a home directory that is not inside any vault.
+//
+// An explicit --vault or KAGAZ_VAULT that finds nothing is an error, never a
+// fall-through: the user named a vault, and quietly using a different one is
+// how the wrong documents get moved.
 func (r *Runtime) Config() (*config.Config, error) {
 	if r.cfg != nil {
 		return r.cfg, nil
 	}
 	start := r.Vault
+	explicit := start != ""
 	if start == "" {
 		start = os.Getenv(VaultEnv)
+		explicit = start != ""
 	}
 	path, err := config.Find(start)
+	if err != nil && errors.Is(err, config.ErrNotFound) && !explicit {
+		if saved, loadErr := userconfig.Load(); loadErr == nil && saved.Vault != "" {
+			if savedPath, savedErr := config.Find(saved.Vault); savedErr == nil {
+				path, err = savedPath, nil
+			}
+		}
+	}
 	if err != nil {
 		if errors.Is(err, config.ErrNotFound) {
 			where := start
 			if where == "" {
 				where = "the current directory or any parent"
 			}
-			return nil, fmt.Errorf("no %s found at %s; run `kagaz init` to create a vault, or pass --vault <path to vault.yaml>",
-				config.FileName, where)
+			hint := "run `kagaz init` to create a vault, or pass --vault <path to vault.yaml>"
+			if !explicit {
+				// Distinguish "you have never chosen one" from "the one you
+				// chose has gone", because the repair is different.
+				if saved, loadErr := userconfig.Load(); loadErr == nil && saved.Vault != "" {
+					hint = fmt.Sprintf(
+						"the saved vault %s is no longer there; run `kagaz use <path to vault.yaml>` to point at another, or `kagaz init` to create one",
+						saved.Vault)
+				}
+			}
+			return nil, fmt.Errorf("no %s found at %s; %s", config.FileName, where, hint)
 		}
 		return nil, err
 	}

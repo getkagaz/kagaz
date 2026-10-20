@@ -61,6 +61,7 @@ func NewRootCommand(rt *Runtime) *cobra.Command {
 		newResolveCommand(rt),
 		newLogCommand(rt),
 		newModelCommand(rt),
+		newUseCommand(rt),
 		newDoctorCommand(rt),
 		newWatchCommand(rt),
 		newMCPCommand(rt),

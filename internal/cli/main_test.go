@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/getkagaz/kagaz/internal/userconfig"
 	"github.com/getkagaz/kagaz/internal/vaultkit/classify"
 	"github.com/getkagaz/kagaz/internal/vaultkit/ocr"
 )
@@ -40,6 +41,15 @@ func TestMain(m *testing.M) {
 		if _, set := os.LookupEnv(env); !set {
 			os.Setenv(env, filepath.Join(os.TempDir(), "kagaz-tests-no-"+env))
 		}
+	}
+	// And off the developer's own saved vault, for the same class of reason.
+	// Runtime.Config falls back to the vault in the user settings file when
+	// nothing else names one, so without this a test that runs from a
+	// directory inside no vault would quietly resolve whatever vault the
+	// person running the suite happens to use — passing on their machine and
+	// failing in CI, or worse, reading a real vault of theirs.
+	if _, set := os.LookupEnv(userconfig.EnvDir); !set {
+		os.Setenv(userconfig.EnvDir, filepath.Join(os.TempDir(), "kagaz-tests-no-user-config"))
 	}
 	os.Exit(m.Run())
 }
