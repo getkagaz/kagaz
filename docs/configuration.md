@@ -260,3 +260,21 @@ A list of `{name, category, match: {keywords, patterns}, extract}` entries
 that extend or override the built-in catalog. `category` must already exist
 in `structure`. See
 [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-doctype) for how to add one.
+
+## The user settings file — not `vault.yaml`
+
+Everything above is `vault.yaml`, which belongs to a vault and travels with
+it. There is one other file, which belongs to a **machine**:
+
+```
+$XDG_CONFIG_HOME/kagaz/config.yaml      # or ~/.config/kagaz/config.yaml
+```
+
+It holds the vault `kagaz use` saved, and the Kagaz app reads and writes the
+same file, so the app and the terminal agree on one vault. `$KAGAZ_CONFIG_DIR`
+overrides its location.
+
+The split is deliberate. `vault.yaml` says what a vault IS, and is shared,
+synced and committed. This file says which vault this machine is currently
+looking at, which is nobody else's business and must not ride along in a
+synced folder. See [`kagaz use`](commands.md#kagaz-use).

@@ -83,6 +83,48 @@ A built-in whose category is not in this vault's `structure:` is not in the
 catalog and so is not listed — a trimmed-down vault reports fewer than the full
 built-in set, which is what it actually resolves.
 
+## `kagaz use`
+
+Records which vault `kagaz` should fall back to, in a settings file this
+machine's Kagaz app reads and writes too. It is how the app and the terminal
+agree on one vault instead of each having its own idea of the current one.
+
+```sh
+kagaz use ~/Documents/vault/vault.yaml   # save it
+kagaz use                                # print what is saved
+kagaz use --clear                        # forget it
+```
+
+**The saved vault is consulted last**, which is the whole point: `--vault`
+wins, then `$KAGAZ_VAULT`, then any vault found above the working directory,
+and only then this. Standing inside a vault still uses that vault, so saving
+one cannot hijack a command you ran somewhere deliberate.
+
+Nothing is moved, written or read inside the vault itself — this writes one
+line to a settings file and nothing else.
+
+### Where the setting lives
+
+`$XDG_CONFIG_HOME/kagaz/config.yaml`, or `~/.config/kagaz/config.yaml` when
+that is unset. `$KAGAZ_CONFIG_DIR` overrides both, which is what the test
+suites use to keep off a real one.
+
+It is written by temp-file-and-rename, so an interrupted write leaves the old
+file rather than half a new one. The file is this machine's, not the vault's:
+it holds a choice about which vault to use, and a vault that is shared or
+synced must not carry one machine's answer to that.
+
+### Why a shared file rather than each side remembering its own
+
+The app and the CLI are one product on one machine, so a vault chosen in one
+should not be invisible to the other — that is how a person ends up with two
+vaults and a missing document. Claude Code and Claude Desktop share
+`~/.claude`, and the Codex CLI and its app share `~/.codex/config.toml`, for
+the same reason.
+
+`--json` reports `{"vault": …, "settings": …, "changed": …}`; `vault` is null
+when nothing is saved.
+
 ## `kagaz ingest`
 
 Runs the propose pipeline (OCR → classify → extract → propose) over one or

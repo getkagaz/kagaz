@@ -40,12 +40,16 @@ indefinitely — but if it's ever pursued:
 ## Signing, notarization and the Cask (menu-bar app)
 
 Separate from the CLI formula, and from this repository: **Kagaz for Mac** is a
-paid, closed-source app developed elsewhere. It needs Apple code-signing and
-notarization before it can be distributed as `Kagaz.app`, and both need an
-**Apple Developer Program account** which is not yet configured. A Homebrew
-Cask for it would live in the `getkagaz/kagaz` tap alongside these formulae and
-does not exist yet. Nothing in this repository should be read as claiming
-otherwise, and nothing here depends on the app.
+closed-source app developed elsewhere, free until 1.0.0. It is now **signed
+with a Developer ID certificate and notarized**, and distributed as a disk
+image from its own repository's releases. A Homebrew Cask for it would live in
+the `getkagaz/kagaz` tap alongside these formulae and **does not exist yet**,
+so installing it is a download, not a `brew install`.
+
+Two things follow that matter here. The app bundles its own copy of the
+`kagaz` binary, so it does not depend on this formula and a cask for it must
+not `depends_on formula: "kagaz"`. And nothing in this repository depends on
+the app: the CLI is complete on its own.
 
 ## What "done" looked like
 

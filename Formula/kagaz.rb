@@ -73,9 +73,10 @@ class Kagaz < Formula
           It is not installed here on purpose: it pulls the whole MLX-Swift
           stack, and its weights are a multi-gigabyte `kagaz model pull`.
 
-      There is no Homebrew Cask for the menu-bar app: distributing a signed,
-      notarized Kagaz.app needs an Apple Developer Program account that this
-      project does not have.
+      There is no Homebrew Cask for the menu-bar app yet — it is a download
+      from its own releases. It carries its own copy of this CLI, so the app
+      does not need this formula; install this one to have `kagaz` in a
+      terminal as well, and run `kagaz use` so both agree on one vault.
     EOS
   end
 

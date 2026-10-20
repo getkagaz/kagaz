@@ -131,11 +131,11 @@ step, even once your C++ toolchain is healthy.
 plainly so the two don't blur together: `kagaz.rb` needs no Xcode at all;
 `kagaz-mlx.rb` needs it unconditionally, for `xcrun metal`.**
 
-**Status recap:** Kagaz is pre-1.0 and not yet released. There is no
-published bottle and no shipped Homebrew Cask for the menu-bar app yet.
-Signing, notarization and cask packaging for the menu-bar app additionally
-need an Apple Developer account, tracked as a remaining human-gated step
-(see [HOMEBREW_CORE.md](HOMEBREW_CORE.md)).
+**Status recap:** Kagaz is pre-1.0. The CLI is released and installable from
+the tap. The menu-bar app is signed and notarized and distributed as a disk
+image; there is no Homebrew Cask for it yet, so it is a download rather than a
+`brew install` (see [HOMEBREW_CORE.md](HOMEBREW_CORE.md)). The app carries its
+own copy of this CLI, so it needs nothing installed first.
 
 ## Building from source
 

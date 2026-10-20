@@ -11,8 +11,8 @@ searchable, offline facts on top. There is no database, no cloud sync of its
 own, and no proprietary file format standing between you and your files.
 
 > **Status: pre-1.0.** The CLI is released and installable — `brew install`
-> below works today. The menu-bar app is a separate paid product and is not
-> released yet; it needs code signing and notarization first. See
+> below works today. The menu-bar app is a separate closed-source product,
+> now signed and notarized, and **free until 1.0.0**. See
 > [docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md) for exactly what is and
 > isn't done.
 
@@ -223,14 +223,20 @@ Yes — **Kagaz for Mac**, a SwiftUI `MenuBarExtra` that holds zero vault logic
 of its own and shells out to the `kagaz` CLI with `--json`, the same as
 anything else that talks to a vault.
 
-**It is a paid, closed-source product, and its source is not in this
-repository.** This repository is the CLI: MIT-licensed, free, and complete on
-its own — every command documented here works without the app, and nothing in
-the CLI is withheld or degraded to sell it. The app is convenience over that
-CLI, not a gate in front of it.
+**It is a closed-source product, and its source is not in this repository.**
+This repository is the CLI: MIT-licensed, free, and complete on its own —
+every command documented here works without the app, and nothing in the CLI is
+withheld or degraded to sell it. The app is convenience over that CLI, not a
+gate in front of it. It is free until 1.0.0.
 
-It is not yet released: signing, notarization and distribution all need an
-Apple Developer account. See [docs/HOMEBREW_CORE.md](docs/HOMEBREW_CORE.md).
+The app **ships the `kagaz` CLI inside its own bundle**, so installing it
+needs no Homebrew and no PATH. That copy is the one it drives. Install the
+formula as well if you want `kagaz` in a terminal, and
+[`kagaz use`](docs/commands.md#kagaz-use) keeps both halves pointed at one
+vault.
+
+It is signed and notarized; a Homebrew Cask does not exist yet, so it is a
+download rather than a `brew install`.
 
 ## Contributing
 
